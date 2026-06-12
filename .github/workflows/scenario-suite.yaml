@@ -32,8 +32,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
-      GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
-      GITHUB_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+      GH_TOKEN: ${{ secrets.CASCADE_STATE_TEST_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.CASCADE_STATE_TEST_TOKEN }}
       # Source for the revalidation request, taken from the event payload via env
       # to avoid injecting payload text into shell scripts.
       REVALIDATE_SOURCE: ${{ github.event.client_payload.source }}
@@ -42,7 +42,7 @@ jobs:
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
           fetch-depth: 0
-          token: ${{ secrets.CASCADE_STATE_TOKEN }}
+          token: ${{ secrets.CASCADE_STATE_TEST_TOKEN }}
 
       - name: Setup CLI
         uses: stablekernel/cascade/.github/actions/setup-cli@v0.1.0
