@@ -1,0 +1,24 @@
+name: build-docs
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: false
+        type: string
+      sha:
+        required: false
+        type: string
+      version:
+        required: false
+        type: string
+      target_env:
+        required: false
+        type: string
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Stub build-docs
+        run: |
+          echo "build-docs environment=${{ inputs.environment }} sha=${{ inputs.sha }} version=${{ inputs.version }} target_env=${{ inputs.target_env }}"
+          sleep 2

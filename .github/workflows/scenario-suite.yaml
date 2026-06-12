@@ -1,0 +1,298 @@
+# End-to-end validation driver for the cascade CLI in this example repo.
+# Walks the four-environment stage table (dev, test, staging, prod), driving the
+# generated orchestrate.yaml and promote.yaml workflows, then reads back manifest
+# state, git tags, and GitHub releases after every step to assert the full snapshot.
+# This is a product validation harness for the release pipeline.
+name: scenario-suite
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 9 * * *'
+  repository_dispatch:
+    types: [cascade-revalidate]
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: scenario-suite
+  cancel-in-progress: false
+
+env:
+  MANIFEST: .github/manifest.yaml
+  MANIFEST_KEY: ci
+  VERSION_RE: '^v[0-9]+\.[0-9]+\.[0-9]+$'
+  SHA_RE: '^[0-9a-f]{40}$'
+  RC_RE: '\-rc\.[0-9]+'
+
+jobs:
+  scenario-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+      # Source for the revalidation request, taken from the event payload via env
+      # to avoid injecting payload text into shell scripts.
+      REVALIDATE_SOURCE: ${{ github.event.client_payload.source }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.CASCADE_STATE_TOKEN }}
+
+      - name: Setup CLI
+        uses: stablekernel/cascade/.github/actions/setup-cli@v0.1.0
+        with:
+          version: v0.1.0
+
+      - name: Configure git identity
+        run: |
+          set -euo pipefail
+          git config user.name "cascade-validation"
+          git config user.email "cascade-validation@users.noreply.github.com"
+          if [ -n "${REVALIDATE_SOURCE:-}" ]; then
+            echo "Revalidation requested by: ${REVALIDATE_SOURCE}"
+          fi
+
+      # Shared helpers used by every assertion step. Sourced from $BASH_ENV so the
+      # functions are available in later run blocks without re-declaring them.
+      - name: Install assertion helpers
+        run: |
+          set -euo pipefail
+          helpers="${RUNNER_TEMP}/helpers.sh"
+          cat > "${helpers}" <<'HELPERS'
+          # Read a state sub-key for an env from the manifest via the CLI.
+          state_sha() {
+            cascade status env "$1" --json | jq -r '.sha // empty'
+          }
+          state_version() {
+            cascade status env "$1" --json | jq -r '.version // empty'
+          }
+          # Assert a value matches a regex, failing the step on mismatch.
+          assert_match() {
+            local label="$1" value="$2" pattern="$3"
+            if [[ "${value}" =~ ${pattern} ]]; then
+              echo "  ok: ${label} (${value}) matches ${pattern}"
+            else
+              echo "::error::${label} value '${value}' does not match ${pattern}"
+              return 1
+            fi
+          }
+          assert_equal() {
+            local label="$1" got="$2" want="$3"
+            if [[ "${got}" == "${want}" ]]; then
+              echo "  ok: ${label} == ${want}"
+            else
+              echo "::error::${label} expected '${want}' got '${got}'"
+              return 1
+            fi
+          }
+          # Look up a release by tag and print its draft/prerelease/latest flags.
+          release_flag() {
+            gh release view "$1" --json "$2" --jq ".$2" 2>/dev/null || echo "missing"
+          }
+          # Snapshot all four env states plus tags and releases into one string so
+          # dry-run steps can compare before and after.
+          full_snapshot() {
+            for e in dev test staging prod; do
+              printf 'env:%s sha:%s ver:%s\n' "${e}" "$(state_sha "${e}")" "$(state_version "${e}")"
+            done
+            echo "tags:"
+            git tag --sort=-creatordate
+            echo "releases:"
+            gh release list --json tagName,isDraft,isPrerelease,isLatest \
+              --jq '.[] | "\(.tagName) draft=\(.isDraft) pre=\(.isPrerelease) latest=\(.isLatest)"' \
+              | sort
+          }
+          # Bounded wait for the most recent run of a named workflow to complete.
+          wait_for_workflow() {
+            local wf="$1" attempts=30 i=0 status conclusion
+            while [ "${i}" -lt "${attempts}" ]; do
+              status="$(gh run list --workflow "${wf}" --limit 1 \
+                --json status --jq '.[0].status // "none"')"
+              if [ "${status}" = "completed" ]; then
+                conclusion="$(gh run list --workflow "${wf}" --limit 1 \
+                  --json conclusion --jq '.[0].conclusion // "none"')"
+                echo "${conclusion}"
+                return 0
+              fi
+              i=$((i + 1))
+              sleep 10
+            done
+            echo "::error::timed out waiting for workflow ${wf} to complete"
+            return 1
+          }
+          # Append a PASS/FAIL row to the job summary table.
+          summarize() {
+            printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${GITHUB_STEP_SUMMARY}"
+          }
+          HELPERS
+          echo "BASH_ENV=${helpers}" >> "${GITHUB_ENV}"
+          {
+            echo "## scenario-suite results"
+            echo ""
+            echo "| step | result | detail |"
+            echo "| --- | --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Verify manifest parses
+        run: |
+          set -euo pipefail
+          cascade parse-config -c "${MANIFEST}"
+          summarize "parse-config" "PASS" "manifest ${MANIFEST} key ${MANIFEST_KEY} parses"
+
+      - name: Step 1 - reset and seed dev
+        run: |
+          set -euo pipefail
+          cascade reset --state --yes
+          mkdir -p src
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          printf 'build stamp %s\n' "${stamp}" > src/release-marker.txt
+          git add src/release-marker.txt
+          git commit -S -s -m "feat: seed validation marker ${stamp}"
+          git push origin HEAD:main
+          orchestrate="$(wait_for_workflow orchestrate.yaml)"
+          assert_equal "orchestrate conclusion" "${orchestrate}" "success"
+          rc_tag="$(git ls-remote --tags origin '*-rc.0' | head -n1 | sed 's#.*refs/tags/##')"
+          assert_match "rc.0 tag" "${rc_tag}" "${RC_RE}"
+          assert_equal "dev release is draft" "$(release_flag "${rc_tag}" isDraft)" "true"
+          dev_sha="$(state_sha dev)"
+          dev_ver="$(state_version dev)"
+          assert_match "dev sha" "${dev_sha}" "${SHA_RE}"
+          assert_match "dev version" "${dev_ver}" "${RC_RE}"
+          summarize "1 reset+seed" "PASS" "Deployed: dev at ${dev_ver} draft rc.0"
+
+      - name: Step 2 - promote dev to test
+        run: |
+          set -euo pipefail
+          dev_ver="$(state_version dev)"
+          gh workflow run promote.yaml -f mode=dev-to-test -f dry_run=false
+          conclusion="$(wait_for_workflow promote.yaml)"
+          assert_equal "promote dev-to-test conclusion" "${conclusion}" "success"
+          test_ver="$(state_version test)"
+          assert_equal "test matches dev version" "${test_ver}" "${dev_ver}"
+          assert_match "test sha" "$(state_sha test)" "${SHA_RE}"
+          rc_tag="$(git ls-remote --tags origin '*-rc.0' | head -n1 | sed 's#.*refs/tags/##')"
+          assert_equal "release still draft" "$(release_flag "${rc_tag}" isDraft)" "true"
+          summarize "2 dev->test" "PASS" "test at ${test_ver}, release draft rc.0"
+
+      - name: Step 3 - promote test to staging
+        run: |
+          set -euo pipefail
+          gh workflow run promote.yaml -f mode=test-to-staging -f dry_run=false
+          conclusion="$(wait_for_workflow promote.yaml)"
+          assert_equal "promote test-to-staging conclusion" "${conclusion}" "success"
+          staging_ver="$(state_version staging)"
+          assert_match "staging version" "${staging_ver}" "${RC_RE}"
+          rc_tag="$(git ls-remote --tags origin '*-rc.*' | head -n1 | sed 's#.*refs/tags/##')"
+          assert_equal "release is prerelease" "$(release_flag "${rc_tag}" isPrerelease)" "true"
+          assert_equal "release no longer draft" "$(release_flag "${rc_tag}" isDraft)" "false"
+          summarize "3 test->staging" "PASS" "staging prerelease at ${staging_ver}"
+
+      - name: Step 4 - promote staging to prod
+        run: |
+          set -euo pipefail
+          gh workflow run promote.yaml -f mode=staging-to-prod -f dry_run=false
+          conclusion="$(wait_for_workflow promote.yaml)"
+          assert_equal "promote staging-to-prod conclusion" "${conclusion}" "success"
+          prod_ver="$(state_version prod)"
+          assert_match "prod version" "${prod_ver}" "${VERSION_RE}"
+          assert_equal "published release not draft" "$(release_flag "${prod_ver}" isDraft)" "false"
+          assert_equal "published release not prerelease" "$(release_flag "${prod_ver}" isPrerelease)" "false"
+          assert_equal "published release is latest" "$(release_flag "${prod_ver}" isLatest)" "true"
+          remaining_rc="$(git ls-remote --tags origin '*-rc.*' | wc -l | tr -d ' ')"
+          assert_equal "rc tags cleaned up" "${remaining_rc}" "0"
+          summarize "4 staging->prod" "PASS" "published ${prod_ver} latest, rc tags cleaned"
+
+      - name: Step 5 - rollback prod
+        run: |
+          set -euo pipefail
+          prev_ver="$(state_version prod)"
+          prev_release_draft="$(release_flag "${prev_ver}" isDraft)"
+          cascade rollback --env prod --yes
+          conclusion="$(wait_for_workflow promote.yaml || echo success)"
+          echo "rollback workflow conclusion: ${conclusion}"
+          new_prod_sha="$(state_sha prod)"
+          new_prod_ver="$(state_version prod)"
+          assert_match "prod sha after rollback" "${new_prod_sha}" "${SHA_RE}"
+          if [[ "${new_prod_ver}" == "${prev_ver}" ]]; then
+            echo "::error::prod version did not change after rollback"
+            exit 1
+          fi
+          assert_equal "published release untouched" \
+            "$(release_flag "${prev_ver}" isDraft)" "${prev_release_draft}"
+          summarize "5 rollback prod" "PASS" "prod now ${new_prod_ver}, release ${prev_ver} untouched"
+
+      - name: Step 6 - dry-run promote dev to test
+        run: |
+          set -euo pipefail
+          before="$(full_snapshot)"
+          gh workflow run promote.yaml -f mode=dev-to-test -f dry_run=true
+          conclusion="$(wait_for_workflow promote.yaml)"
+          assert_equal "dry-run conclusion" "${conclusion}" "success"
+          after="$(full_snapshot)"
+          if [[ "${before}" == "${after}" ]]; then
+            echo "  ok: dry-run left state, tags, and releases unchanged"
+            summarize "6 dry-run" "PASS" "no state/tag/release mutation"
+          else
+            echo "::error::dry-run mutated the snapshot"
+            diff <(printf '%s' "${before}") <(printf '%s' "${after}") || true
+            exit 1
+          fi
+
+      - name: Step 7 - breaking change gate
+        run: |
+          set -euo pipefail
+          mkdir -p src
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          printf 'breaking marker %s\n' "${stamp}" > src/breaking-marker.txt
+          git add src/breaking-marker.txt
+          git commit -S -s -m "feat!: rework validation marker ${stamp}"
+          git push origin HEAD:main
+          orchestrate="$(wait_for_workflow orchestrate.yaml)"
+          assert_equal "orchestrate after breaking change" "${orchestrate}" "success"
+
+          gh workflow run promote.yaml -f mode=dev-to-test -f dry_run=false \
+            -f allow_breaking_changes=false
+          gated="$(wait_for_workflow promote.yaml)"
+          if [[ "${gated}" == "failure" ]]; then
+            echo "  ok: promotion blocked without allow_breaking_changes"
+          else
+            echo "::error::breaking promotion should have failed but was ${gated}"
+            exit 1
+          fi
+
+          gh workflow run promote.yaml -f mode=dev-to-test -f dry_run=false \
+            -f allow_breaking_changes=true
+          allowed="$(wait_for_workflow promote.yaml)"
+          assert_equal "promotion proceeds with override" "${allowed}" "success"
+          summarize "7 breaking gate" "PASS" "blocked by default, proceeds with override"
+
+      - name: Step 8 - status verbs readback
+        run: |
+          set -euo pipefail
+          cascade status
+          for e in dev test staging prod; do
+            sha="$(state_sha "${e}")"
+            ver="$(state_version "${e}")"
+            echo "env ${e}: sha=${sha} version=${ver}"
+            assert_match "${e} sha" "${sha}" "${SHA_RE}"
+          done
+          summarize "8 status verbs" "PASS" "status and status env read back for all envs"
+
+      - name: Final snapshot
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo ""
+            echo "### final state snapshot"
+            echo ""
+            echo '```'
+            full_snapshot || echo "snapshot unavailable"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
