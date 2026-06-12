@@ -42,5 +42,5 @@ that drives it end to end. It covers:
 ## Running the scenario suite
 
 The scenario suite runs on a daily schedule, on `repository_dispatch`
-(`cascade-revalidate`), and on manual dispatch. It uses the `CASCADE_STATE_TOKEN`
+(`cascade-revalidate`), and on manual dispatch. It uses the `CASCADE_STATE_TEST_TOKEN`
 secret for all trunk and release operations.
