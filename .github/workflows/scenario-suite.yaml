@@ -159,21 +159,26 @@ jobs:
           # conventional type (squash collapses the branch to one commit whose
           # subject is the PR title). Prints the merge commit SHA on origin/main.
           seed_via_pr() {
-            local file="$1" content="$2" title="$3" branch
+            local file="$1" content="$2" title="$3" branch sha
             branch="scenario/src-$(date +%s)-${RANDOM}"
-            git fetch origin main --quiet
-            git checkout -B "${branch}" origin/main
-            mkdir -p src
-            printf '%s\n' "${content}" > "${file}"
-            git add "${file}"
-            git commit --no-gpg-sign -s -m "${title}"
-            git push origin "${branch}"
-            gh pr create --base main --head "${branch}" \
-              --title "${title}" \
-              --body "Automated scenario run; drives orchestrate on merge." >/dev/null
-            gh pr merge "${branch}" --squash --delete-branch
-            git fetch origin main --quiet
-            git rev-parse origin/main
+            # Route all command chatter to stderr so the function's stdout is
+            # ONLY the merge SHA (callers capture it via command substitution).
+            {
+              git fetch origin main --quiet
+              git checkout -B "${branch}" origin/main
+              mkdir -p src
+              printf '%s\n' "${content}" > "${file}"
+              git add "${file}"
+              git commit --no-gpg-sign -s -m "${title}"
+              git push origin "${branch}"
+              gh pr create --base main --head "${branch}" \
+                --title "${title}" \
+                --body "Automated scenario run; drives orchestrate on merge."
+              gh pr merge "${branch}" --squash --delete-branch
+              git fetch origin main --quiet
+            } >&2
+            sha="$(git rev-parse origin/main)"
+            printf '%s\n' "${sha}"
           }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
