@@ -15,6 +15,7 @@ on:
 permissions:
   contents: write
   actions: write
+  pull-requests: write
 
 concurrency:
   group: scenario-suite
@@ -109,6 +110,8 @@ jobs:
               | sort
           }
           # Bounded wait for the most recent run of a named workflow to complete.
+          # Used for workflow_dispatch-driven runs (promote) where there is no
+          # merge commit to key on.
           wait_for_workflow() {
             local wf="$1" attempts=30 i=0 status conclusion
             while [ "${i}" -lt "${attempts}" ]; do
@@ -125,6 +128,52 @@ jobs:
             done
             echo "::error::timed out waiting for workflow ${wf} to complete"
             return 1
+          }
+          # Wait for the orchestrate run fired by a specific merge commit on main,
+          # keyed on headSha so a stale or concurrent run is never mistaken for
+          # this one. Prints the run conclusion on success.
+          wait_for_orchestrate_sha() {
+            local merge_sha="$1" attempts=30 i=0 run_id="" status conclusion
+            while [ "${i}" -lt "${attempts}" ]; do
+              run_id="$(gh run list --workflow orchestrate.yaml --branch main \
+                --json databaseId,headSha,status \
+                --jq ".[] | select(.headSha==\"${merge_sha}\") | .databaseId" \
+                | head -n1)"
+              if [ -n "${run_id}" ]; then
+                status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
+                if [ "${status}" = "completed" ]; then
+                  conclusion="$(gh run view "${run_id}" \
+                    --json conclusion --jq '.conclusion // "none"')"
+                  echo "${conclusion}"
+                  return 0
+                fi
+              fi
+              i=$((i + 1))
+              sleep 10
+            done
+            echo "::error::timed out waiting for orchestrate run for ${merge_sha}"
+            return 1
+          }
+          # Land a src/** change on main through a PAT-authored branch -> PR ->
+          # squash-merge, emulating a real contributor. The PR title carries the
+          # conventional type (squash collapses the branch to one commit whose
+          # subject is the PR title). Prints the merge commit SHA on origin/main.
+          seed_via_pr() {
+            local file="$1" content="$2" title="$3" branch
+            branch="scenario/src-$(date +%s)-${RANDOM}"
+            git fetch origin main --quiet
+            git checkout -B "${branch}" origin/main
+            mkdir -p src
+            printf '%s\n' "${content}" > "${file}"
+            git add "${file}"
+            git commit -S -s -m "${title}"
+            git push origin "${branch}"
+            gh pr create --base main --head "${branch}" \
+              --title "${title}" \
+              --body "Automated scenario run; drives orchestrate on merge." >/dev/null
+            gh pr merge "${branch}" --squash --delete-branch
+            git fetch origin main --quiet
+            git rev-parse origin/main
           }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
@@ -146,16 +195,17 @@ jobs:
           summarize "parse-config" "PASS" "manifest ${MANIFEST} key ${MANIFEST_KEY} parses"
 
       - name: Step 1 - reset and seed dev
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_STATE_TEST_TOKEN }}
         run: |
           set -euo pipefail
           cascade reset --state --yes
-          mkdir -p src
           stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-          printf 'build stamp %s\n' "${stamp}" > src/release-marker.txt
-          git add src/release-marker.txt
-          git commit -S -s -m "feat: seed validation marker ${stamp}"
-          git push origin HEAD:main
-          orchestrate="$(wait_for_workflow orchestrate.yaml)"
+          merge_sha="$(seed_via_pr \
+            src/release-marker.txt \
+            "build stamp ${stamp}" \
+            "feat: seed validation marker ${stamp}")"
+          orchestrate="$(wait_for_orchestrate_sha "${merge_sha}")"
           assert_equal "orchestrate conclusion" "${orchestrate}" "success"
           rc_tag="$(git ls-remote --tags origin '*-rc.0' | head -n1 | sed 's#.*refs/tags/##')"
           assert_match "rc.0 tag" "${rc_tag}" "${RC_RE}"
@@ -245,15 +295,19 @@ jobs:
           fi
 
       - name: Step 7 - breaking change gate
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_STATE_TEST_TOKEN }}
         run: |
           set -euo pipefail
-          mkdir -p src
           stamp="$(date -u +%Y%m%dT%H%M%SZ)"
-          printf 'breaking marker %s\n' "${stamp}" > src/breaking-marker.txt
-          git add src/breaking-marker.txt
-          git commit -S -s -m "feat!: rework validation marker ${stamp}"
-          git push origin HEAD:main
-          orchestrate="$(wait_for_workflow orchestrate.yaml)"
+          # The breaking marker (`!`) MUST live in the PR title: a squash merge
+          # collapses the branch into one commit whose subject is the PR title,
+          # and cascade detects the break from that subject's trailing `!`.
+          merge_sha="$(seed_via_pr \
+            src/breaking-marker.txt \
+            "breaking marker ${stamp}" \
+            "feat!: rework validation marker ${stamp}")"
+          orchestrate="$(wait_for_orchestrate_sha "${merge_sha}")"
           assert_equal "orchestrate after breaking change" "${orchestrate}" "success"
 
           gh workflow run promote.yaml -f mode=dev-to-test -f dry_run=false \
