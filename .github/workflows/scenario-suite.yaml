@@ -293,7 +293,7 @@ jobs:
           assert_match "prod version" "${prod_ver}" "${VERSION_RE}"
           assert_equal "published release not draft" "$(release_flag "${prod_ver}" isDraft)" "false"
           assert_equal "published release not prerelease" "$(release_flag "${prod_ver}" isPrerelease)" "false"
-          assert_equal "published release is latest" "$(release_flag "${prod_ver}" isLatest)" "true"
+          assert_equal "published release is latest" "$(gh release list --json tagName,isLatest --jq ".[] | select(.tagName==\"${prod_ver}\") | .isLatest" 2>/dev/null || echo missing)" "true"
           remaining_rc="$(git ls-remote --tags origin '*-rc.*' | wc -l | tr -d ' ')"
           assert_equal "rc tags cleaned up" "${remaining_rc}" "0"
           summarize "4 staging->prod" "PASS" "published ${prod_ver} latest, rc tags cleaned"
