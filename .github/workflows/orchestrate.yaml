@@ -78,18 +78,6 @@ jobs:
             --config .github/manifest.yaml \
             --gha-output
 
-  deploy-app:
-    name: Deploy (app)
-    needs: [setup]
-    if: |
-      needs.setup.outputs.run_deploy_app == 'true'
-    uses: ./.github/workflows/deploy-app.yaml
-    with:
-      environment: ${{ github.event.inputs.environment || 'dev' }}
-      sha: ${{ needs.setup.outputs.head_sha }}
-      dry_run: ${{ inputs.dry_run }}
-    secrets: inherit
-
   build-app:
     name: Build (app)
     needs: [setup]
@@ -99,7 +87,6 @@ jobs:
     with:
       environment: ${{ github.event.inputs.environment || 'dev' }}
       sha: ${{ needs.setup.outputs.head_sha }}
-    secrets: inherit
 
   build-docs:
     name: Build (docs)
@@ -110,11 +97,21 @@ jobs:
     with:
       environment: ${{ github.event.inputs.environment || 'dev' }}
       sha: ${{ needs.setup.outputs.head_sha }}
-    secrets: inherit
+
+  deploy-app:
+    name: Deploy (app)
+    needs: [setup]
+    if: |
+      needs.setup.outputs.run_deploy_app == 'true'
+    uses: ./.github/workflows/deploy-app.yaml
+    with:
+      environment: ${{ github.event.inputs.environment || 'dev' }}
+      sha: ${{ needs.setup.outputs.head_sha }}
+      dry_run: ${{ inputs.dry_run }}
 
   finalize:
     name: Finalize
-    needs: [setup, deploy-app, build-app, build-docs]
+    needs: [setup, build-app, build-docs, deploy-app]
     if: always() && needs.setup.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -129,9 +126,9 @@ jobs:
           echo "### Callback Results" >> "$GITHUB_STEP_SUMMARY"
           echo "| Callback | Result | On Failure |" >> "$GITHUB_STEP_SUMMARY"
           echo "|----------|--------|------------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Deploy (app) | ${{ needs.deploy-app.result }} | abort |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build (app) | ${{ needs.build-app.result }} | abort |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build (docs) | ${{ needs.build-docs.result }} | abort |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Deploy (app) | ${{ needs.deploy-app.result }} | abort |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "### Outputs" >> "$GITHUB_STEP_SUMMARY"
           HAS_OUTPUTS=false
@@ -256,7 +253,7 @@ jobs:
           echo "::error::Failed to write state via API after 5 attempts" >&2
           exit 1
       - name: Check for Failures
-        if: contains(fromJSON('["failure", "cancelled"]'), needs.deploy-app.result) || contains(fromJSON('["failure", "cancelled"]'), needs.build-app.result) || contains(fromJSON('["failure", "cancelled"]'), needs.build-docs.result)
+        if: contains(fromJSON('["failure", "cancelled"]'), needs.build-app.result) || contains(fromJSON('["failure", "cancelled"]'), needs.build-docs.result) || contains(fromJSON('["failure", "cancelled"]'), needs.deploy-app.result)
         run: |
           echo "One or more critical callbacks failed or were cancelled"
           exit 1
