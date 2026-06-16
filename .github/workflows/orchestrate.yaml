@@ -64,10 +64,10 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@v1.0.0-rc.12
+        uses: stablekernel/cascade/.github/actions/setup-cli@v1.0.0-rc.13
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          version: v1.0.0-rc.12
+          version: v1.0.0-rc.13
       - name: Run Setup
         id: setup
         env:
@@ -107,7 +107,7 @@ jobs:
     with:
       environment: ${{ github.event.inputs.environment || 'dev' }}
       sha: ${{ needs.setup.outputs.head_sha }}
-      dry_run: ${{ inputs.dry_run }}
+      dry_run: ${{ github.event.inputs.dry_run }}
 
   finalize:
     name: Finalize
@@ -136,10 +136,10 @@ jobs:
             echo "_No outputs produced_" >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@v1.0.0-rc.12
+        uses: stablekernel/cascade/.github/actions/setup-cli@v1.0.0-rc.13
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          version: v1.0.0-rc.12
+          version: v1.0.0-rc.13
       - name: Generate Changelog
         id: changelog
         env:
