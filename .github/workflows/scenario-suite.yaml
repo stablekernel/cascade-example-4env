@@ -209,7 +209,13 @@ jobs:
             src/release-marker.txt \
             "build stamp ${stamp}" \
             "feat: seed validation marker ${stamp}")"
+          echo "Waiting for orchestrate run on merge SHA: ${merge_sha}"
           orchestrate="$(wait_for_orchestrate_sha "${merge_sha}")"
+          # Refresh local checkout - orchestrate's finalize job pushes a state-update
+          # commit to main after the workflow completes; without this, cascade status
+          # reads the pre-orchestrate manifest and state asserts fail.
+          git fetch origin main --quiet
+          git reset --hard origin/main
           assert_equal "orchestrate conclusion" "${orchestrate}" "success"
           rc_tag="$(git ls-remote --tags origin '*-rc.0' | head -n1 | sed 's#.*refs/tags/##')"
           assert_match "rc.0 tag" "${rc_tag}" "${RC_RE}"
