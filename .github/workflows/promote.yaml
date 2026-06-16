@@ -115,10 +115,10 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@v1.0.0-rc.13
+        uses: stablekernel/cascade/.github/actions/setup-cli@v1.0.0-rc.14
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          version: v1.0.0-rc.13
+          version: v1.0.0-rc.14
       - name: Run Preflight
         id: preflight
         env:
@@ -151,10 +151,10 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@v1.0.0-rc.13
+        uses: stablekernel/cascade/.github/actions/setup-cli@v1.0.0-rc.14
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          version: v1.0.0-rc.13
+          version: v1.0.0-rc.14
       - name: Validate Promotion
         env:
           MODE: ${{ github.event.inputs.mode }}
@@ -173,7 +173,7 @@ jobs:
     with:
       environment: ${{ needs.preflight.outputs.target_env }}
       sha: ${{ needs.preflight.outputs.source_sha }}
-      dry_run: ${{ github.event.inputs.dry_run }}
+      dry_run: ${{ github.event.inputs.dry_run == 'true' }}
 
   deploy-app-prod:
     name: Deploy app (prod)
@@ -183,7 +183,7 @@ jobs:
     with:
       environment: prod
       sha: ${{ needs.preflight.outputs.prod_sha }}
-      dry_run: ${{ github.event.inputs.dry_run }}
+      dry_run: ${{ github.event.inputs.dry_run == 'true' }}
 
   # Rollback jobs - revert successful deploys if any deploy fails
   rollback-app:
@@ -210,10 +210,10 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@v1.0.0-rc.13
+        uses: stablekernel/cascade/.github/actions/setup-cli@v1.0.0-rc.14
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          version: v1.0.0-rc.13
+          version: v1.0.0-rc.14
       - name: Generate Changelog
         id: changelog
         env:
