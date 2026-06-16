@@ -199,6 +199,30 @@ jobs:
             echo "::error::timed out waiting for ${env} state to land on trunk"
             return 1
           }
+          # Like sync_env_state, but poll until the env's sha differs from a
+          # known prior value. A rollback re-writes an env that ALREADY carries
+          # a version, so a plain non-empty poll returns the stale pre-rollback
+          # state immediately. Pass the pre-rollback sha and wait for the
+          # finalize state commit that actually changes it.
+          sync_env_state_until_sha_changed() {
+            local env="$1" prior_sha="$2" i=0
+            while [ "${i}" -lt 20 ]; do
+              git fetch origin main --quiet
+              git reset --hard origin/main >/dev/null
+              if [ -n "$(state_sha "${env}")" ] && [ "$(state_sha "${env}")" != "${prior_sha}" ]; then
+                return 0
+              fi
+              i=$((i + 1))
+              sleep 3
+            done
+            echo "::error::timed out waiting for ${env} sha to change from ${prior_sha} on trunk"
+            return 1
+          }
+          # Read the divergence ref an env carries (set to rollback/<env> after a
+          # manual rollback, empty on the linear promotion line).
+          state_ref() {
+            cascade status env "$1" --json | jq -r '.state.ref // empty'
+          }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
             printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${GITHUB_STEP_SUMMARY}"
@@ -298,26 +322,89 @@ jobs:
           assert_equal "rc tags cleaned up" "${remaining_rc}" "0"
           summarize "4 staging->prod" "PASS" "published ${prod_ver} latest, rc tags cleaned"
 
+      - name: Step 4b - second cascade publishes a newer prod version
+        run: |
+          set -euo pipefail
+          # A rollback can only resolve a prior target once prod has carried two
+          # distinct versions: the second deploy records the displaced state in
+          # prod's deploy-history ring. Land a second feat: marker so the next
+          # orchestrate bumps the minor (v0.1.0 -> v0.2.0), then cascade the new
+          # artifact dev-to-prod in one dispatch so prod publishes v0.2.0.
+          first_prod_ver="$(state_version prod)"
+          stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+          merge_sha="$(seed_via_pr \
+            src/release-marker.txt \
+            "build stamp ${stamp}" \
+            "feat: bump validation marker ${stamp}")"
+          orchestrate="$(wait_for_orchestrate_sha "${merge_sha}")"
+          sync_env_state dev
+          assert_equal "second orchestrate conclusion" "${orchestrate}" "success"
+          gh workflow run promote.yaml -f mode=dev-to-prod -f dry_run=false
+          conclusion="$(wait_for_workflow promote.yaml)"
+          assert_equal "dev-to-prod cascade conclusion" "${conclusion}" "success"
+          # The promote finalize pushes prod's state commit moments after the run
+          # reports success; poll until prod's version moves off the prior value.
+          i=0
+          while [ "${i}" -lt 20 ]; do
+            git fetch origin main --quiet
+            git reset --hard origin/main >/dev/null
+            cur="$(state_version prod)"
+            if [ -n "${cur}" ] && [ "${cur}" != "${first_prod_ver}" ]; then
+              break
+            fi
+            i=$((i + 1))
+            sleep 3
+          done
+          second_prod_ver="$(state_version prod)"
+          assert_match "second prod version" "${second_prod_ver}" "${VERSION_RE}"
+          if [[ "${second_prod_ver}" == "${first_prod_ver}" ]]; then
+            echo "::error::second cascade did not advance prod past ${first_prod_ver}"
+            exit 1
+          fi
+          summarize "4b second cascade" "PASS" "prod advanced ${first_prod_ver} -> ${second_prod_ver}"
+
       - name: Step 5 - rollback prod
         run: |
           set -euo pipefail
-          prev_ver="$(state_version prod)"
-          prev_release_draft="$(release_flag "${prev_ver}" isDraft)"
-          cascade rollback --env prod --yes
-          conclusion="$(wait_for_workflow promote.yaml || echo success)"
-          echo "rollback workflow conclusion: ${conclusion}"
-          # Poll trunk until the rollback's state commit for prod lands.
-          sync_env_state prod
+          # prod now carries v0.2.0 with v0.1.0 retained in its deploy-history
+          # ring. A manual rollback (no explicit target) resolves that prior,
+          # re-deploys its SHA, rewrites prod's state to the older version, and
+          # marks prod diverged (ref=rollback/prod). It does NOT touch any
+          # release object - the published v0.2.0 and v0.1.0 releases stand.
+          cur_ver="$(state_version prod)"
+          cur_sha="$(state_sha prod)"
+          # Re-derive the prior published version from releases so the assertion
+          # does not depend on a value carried across steps.
+          prior_ver="$(gh release list --json tagName,isLatest \
+            --jq "[.[] | select(.tagName != \"${cur_ver}\") | .tagName] | .[0]" 2>/dev/null || echo '')"
+          cur_release_draft="$(release_flag "${cur_ver}" isDraft)"
+          prior_release_draft="$(release_flag "${prior_ver}" isDraft)"
+          # Drive the generated Rollback workflow (cascade-rollback.yaml). The
+          # standalone `cascade rollback` rewrites only the local manifest and
+          # never reaches trunk; the workflow's finalize commits the rolled-back
+          # state, which is what this suite reads back from origin/main.
+          gh workflow run cascade-rollback.yaml -f environment=prod -f dry_run=false
+          conclusion="$(wait_for_workflow cascade-rollback.yaml)"
+          assert_equal "rollback workflow conclusion" "${conclusion}" "success"
+          # Rollback re-writes an env that already has a version, so poll until
+          # prod's sha actually changes off its pre-rollback value rather than
+          # accepting the stale current state.
+          sync_env_state_until_sha_changed prod "${cur_sha}"
           new_prod_sha="$(state_sha prod)"
           new_prod_ver="$(state_version prod)"
+          new_prod_ref="$(state_ref prod)"
           assert_match "prod sha after rollback" "${new_prod_sha}" "${SHA_RE}"
-          if [[ "${new_prod_ver}" == "${prev_ver}" ]]; then
-            echo "::error::prod version did not change after rollback"
+          assert_equal "prod rolled back to prior version" "${new_prod_ver}" "${prior_ver}"
+          if [[ "${new_prod_ver}" == "${cur_ver}" ]]; then
+            echo "::error::prod version did not change after rollback (still ${cur_ver})"
             exit 1
           fi
-          assert_equal "published release untouched" \
-            "$(release_flag "${prev_ver}" isDraft)" "${prev_release_draft}"
-          summarize "5 rollback prod" "PASS" "prod now ${new_prod_ver}, release ${prev_ver} untouched"
+          assert_equal "prod marked diverged by rollback" "${new_prod_ref}" "rollback/prod"
+          assert_equal "rolled-back release untouched" \
+            "$(release_flag "${prior_ver}" isDraft)" "${prior_release_draft}"
+          assert_equal "superseded release untouched" \
+            "$(release_flag "${cur_ver}" isDraft)" "${cur_release_draft}"
+          summarize "5 rollback prod" "PASS" "prod ${cur_ver} -> ${new_prod_ver}, diverged, releases untouched"
 
       - name: Step 6 - dry-run promote dev to test
         run: |
@@ -358,21 +445,38 @@ jobs:
           sync_env_state dev
           assert_equal "orchestrate after breaking change" "${orchestrate}" "success"
 
-          gh workflow run promote.yaml -f mode=dev-to-test -f dry_run=false \
+          # The breaking-change gate is scoped to the prerelease->release and
+          # release->prod boundaries: only a promotion that TARGETS prod is
+          # gated. First carry the breaking artifact up to staging (this hop is
+          # ungated), so the subsequent staging-to-prod hop has the breaking
+          # commit in staging but not in prod and the gate has something to act
+          # on. dev-to-staging never targets prod, so it proceeds.
+          gh workflow run promote.yaml -f mode=dev-to-staging -f dry_run=false
+          staged="$(wait_for_workflow promote.yaml)"
+          assert_equal "carry breaking change to staging" "${staged}" "success"
+          sync_env_state staging
+
+          # Gated leg: staging-to-prod targets prod and carries a breaking
+          # change, so the preflight sets can_proceed=false and the workflow
+          # fails. prod stays at its rolled-back version (this leg writes no
+          # state), so no sync is needed before the override leg.
+          gh workflow run promote.yaml -f mode=staging-to-prod -f dry_run=false \
             -f allow_breaking_changes=false
           gated="$(wait_for_workflow promote.yaml)"
           if [[ "${gated}" == "failure" ]]; then
-            echo "  ok: promotion blocked without allow_breaking_changes"
+            echo "  ok: promotion to prod blocked without allow_breaking_changes"
           else
-            echo "::error::breaking promotion should have failed but was ${gated}"
+            echo "::error::breaking promotion to prod should have failed but was ${gated}"
             exit 1
           fi
 
-          gh workflow run promote.yaml -f mode=dev-to-test -f dry_run=false \
+          # Override leg: the same hop with allow_breaking_changes=true proceeds,
+          # publishing the breaking version to prod and rejoining it onto trunk.
+          gh workflow run promote.yaml -f mode=staging-to-prod -f dry_run=false \
             -f allow_breaking_changes=true
           allowed="$(wait_for_workflow promote.yaml)"
           assert_equal "promotion proceeds with override" "${allowed}" "success"
-          summarize "7 breaking gate" "PASS" "blocked by default, proceeds with override"
+          summarize "7 breaking gate" "PASS" "blocked targeting prod by default, proceeds with override"
 
       - name: Step 8 - status verbs readback
         run: |
