@@ -68,10 +68,10 @@ jobs:
           cat > "${helpers}" <<'HELPERS'
           # Read a state sub-key for an env from the manifest via the CLI.
           state_sha() {
-            cascade status env "$1" --json | jq -r '.sha // empty'
+            cascade status env "$1" --json | jq -r '.state.sha // empty'
           }
           state_version() {
-            cascade status env "$1" --json | jq -r '.version // empty'
+            cascade status env "$1" --json | jq -r '.state.version // empty'
           }
           # Assert a value matches a regex, failing the step on mismatch.
           assert_match() {
