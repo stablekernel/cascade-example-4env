@@ -199,7 +199,7 @@ jobs:
           GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
         run: |
           set -euo pipefail
-          cascade reset --state --yes
+          cascade reset --state --push
           stamp="$(date -u +%Y%m%dT%H%M%SZ)"
           merge_sha="$(seed_via_pr \
             src/release-marker.txt \
