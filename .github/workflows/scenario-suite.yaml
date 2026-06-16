@@ -180,6 +180,25 @@ jobs:
             sha="$(git rev-parse origin/main)"
             printf '%s\n' "${sha}"
           }
+          # Refresh local trunk and poll until the named env carries a version.
+          # cascade's finalize job pushes the "update state" commit to main a
+          # few seconds after the orchestrate/promote run reports success, so a
+          # single fetch+reset can read the pre-state-commit manifest. Re-fetch
+          # trunk and re-read until the env is populated (up to ~60s).
+          sync_env_state() {
+            local env="$1" i=0
+            while [ "${i}" -lt 20 ]; do
+              git fetch origin main --quiet
+              git reset --hard origin/main >/dev/null
+              if [ -n "$(state_version "${env}")" ]; then
+                return 0
+              fi
+              i=$((i + 1))
+              sleep 3
+            done
+            echo "::error::timed out waiting for ${env} state to land on trunk"
+            return 1
+          }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
             printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${GITHUB_STEP_SUMMARY}"
@@ -217,10 +236,10 @@ jobs:
           echo "Waiting for orchestrate run on merge SHA: ${merge_sha}"
           orchestrate="$(wait_for_orchestrate_sha "${merge_sha}")"
           # Refresh local checkout - orchestrate's finalize job pushes a state-update
-          # commit to main after the workflow completes; without this, cascade status
-          # reads the pre-orchestrate manifest and state asserts fail.
-          git fetch origin main --quiet
-          git reset --hard origin/main
+          # commit to main a few seconds after the workflow completes; poll trunk
+          # until dev carries a version before reading it back, otherwise cascade
+          # status reads the pre-orchestrate manifest and state asserts race.
+          sync_env_state dev
           assert_equal "orchestrate conclusion" "${orchestrate}" "success"
           rc_tag="$(git ls-remote --tags origin '*-rc.0' | head -n1 | sed 's#.*refs/tags/##')"
           assert_match "rc.0 tag" "${rc_tag}" "${RC_RE}"
@@ -238,6 +257,8 @@ jobs:
           gh workflow run promote.yaml -f mode=dev-to-test -f dry_run=false
           conclusion="$(wait_for_workflow promote.yaml)"
           assert_equal "promote dev-to-test conclusion" "${conclusion}" "success"
+          # Poll trunk until the promote's state commit for test lands.
+          sync_env_state test
           test_ver="$(state_version test)"
           assert_equal "test matches dev version" "${test_ver}" "${dev_ver}"
           assert_match "test sha" "$(state_sha test)" "${SHA_RE}"
@@ -251,6 +272,8 @@ jobs:
           gh workflow run promote.yaml -f mode=test-to-staging -f dry_run=false
           conclusion="$(wait_for_workflow promote.yaml)"
           assert_equal "promote test-to-staging conclusion" "${conclusion}" "success"
+          # Poll trunk until the promote's state commit for staging lands.
+          sync_env_state staging
           staging_ver="$(state_version staging)"
           assert_match "staging version" "${staging_ver}" "${RC_RE}"
           rc_tag="$(git ls-remote --tags origin '*-rc.*' | head -n1 | sed 's#.*refs/tags/##')"
@@ -264,6 +287,8 @@ jobs:
           gh workflow run promote.yaml -f mode=staging-to-prod -f dry_run=false
           conclusion="$(wait_for_workflow promote.yaml)"
           assert_equal "promote staging-to-prod conclusion" "${conclusion}" "success"
+          # Poll trunk until the promote's state commit for prod lands.
+          sync_env_state prod
           prod_ver="$(state_version prod)"
           assert_match "prod version" "${prod_ver}" "${VERSION_RE}"
           assert_equal "published release not draft" "$(release_flag "${prod_ver}" isDraft)" "false"
@@ -281,6 +306,8 @@ jobs:
           cascade rollback --env prod --yes
           conclusion="$(wait_for_workflow promote.yaml || echo success)"
           echo "rollback workflow conclusion: ${conclusion}"
+          # Poll trunk until the rollback's state commit for prod lands.
+          sync_env_state prod
           new_prod_sha="$(state_sha prod)"
           new_prod_ver="$(state_version prod)"
           assert_match "prod sha after rollback" "${new_prod_sha}" "${SHA_RE}"
@@ -295,6 +322,9 @@ jobs:
       - name: Step 6 - dry-run promote dev to test
         run: |
           set -euo pipefail
+          # Ensure the baseline reflects the landed prod rollback state before
+          # capturing the snapshot the dry-run must leave untouched.
+          sync_env_state prod
           before="$(full_snapshot)"
           gh workflow run promote.yaml -f mode=dev-to-test -f dry_run=true
           conclusion="$(wait_for_workflow promote.yaml)"
@@ -323,6 +353,9 @@ jobs:
             "breaking marker ${stamp}" \
             "feat!: rework validation marker ${stamp}")"
           orchestrate="$(wait_for_orchestrate_sha "${merge_sha}")"
+          # Poll trunk until the re-seeded dev state commit lands so later reads
+          # and the override promotion run against the current manifest.
+          sync_env_state dev
           assert_equal "orchestrate after breaking change" "${orchestrate}" "success"
 
           gh workflow run promote.yaml -f mode=dev-to-test -f dry_run=false \
@@ -344,6 +377,12 @@ jobs:
       - name: Step 8 - status verbs readback
         run: |
           set -euo pipefail
+          # Poll trunk until each env carries state before reading it back; the
+          # override promotion in step 7 pushes test's state commit moments after
+          # the run reports success.
+          for e in dev test staging prod; do
+            sync_env_state "${e}"
+          done
           cascade status
           for e in dev test staging prod; do
             sha="$(state_sha "${e}")"
