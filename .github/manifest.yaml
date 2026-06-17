@@ -29,6 +29,7 @@ ci:
       - name: app
         workflow: .github/workflows/build-app.yaml
         triggers: []
+        retries: 2
       - name: docs
         workflow: .github/workflows/build-docs.yaml
         triggers: []

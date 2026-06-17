@@ -422,6 +422,89 @@ jobs:
             "$(release_flag "${cur_ver}" isDraft)" "${cur_release_draft}"
           summarize "5 rollback prod" "PASS" "prod ${cur_ver} -> ${new_prod_ver}, diverged, releases untouched"
 
+      - name: Step 5c - downgrade gate
+        run: |
+          set -euo pipefail
+          # Exercises the monotonicity gate in internal/promote/preflight.go
+          # checkDowngrade: a promotion whose incoming version sorts below the
+          # target env's current version regresses that env and must be blocked
+          # unless --allow-downgrade is set. This step probes the NON-prod error
+          # variant by targeting `test`, which keeps it off the live prod
+          # rollback divergence entirely.
+          #
+          # The probe runs `cascade promote preflight` directly against a
+          # purpose-built manifest written to RUNNER_TEMP, so it is fully
+          # deterministic and never dispatches a workflow or mutates trunk
+          # state - the live manifest the Step 6 snapshot guards is untouched.
+          # dev carries the lower version and test the higher, so a dev-to-test
+          # cascade lands the lower version on test: a downgrade.
+          high_ver="v0.2.0"
+          low_ver="v0.1.0"
+          probe="${RUNNER_TEMP}/downgrade-manifest.yaml"
+          cat > "${probe}" <<PROBE
+          ci:
+            config:
+              schema_version: 1
+              trunk_branch: main
+              manifest_file: ${probe}
+              manifest_key: ci
+              environments: [dev, test, staging, prod]
+              builds:
+                - name: app
+                  workflow: .github/workflows/build-app.yaml
+              deploys:
+                - name: app
+                  workflow: .github/workflows/deploy-app.yaml
+            state:
+              dev:
+                version: ${low_ver}
+                sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+                deploys:
+                  app:
+                    sha: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+              test:
+                version: ${high_ver}
+                sha: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+                deploys:
+                  app:
+                    sha: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+          PROBE
+
+          # Blocked leg: default gate (--allow-downgrade=false) must fail and
+          # print the non-prod downgrade error naming both versions.
+          set +e
+          blocked_out="$(cascade promote preflight \
+            --mode dev-to-test --config "${probe}" --allow-downgrade=false 2>&1)"
+          blocked_rc=$?
+          set -e
+          if [ "${blocked_rc}" -eq 0 ]; then
+            echo "::error::downgrade preflight should have failed but exited 0"
+            printf '%s\n' "${blocked_out}"
+            exit 1
+          fi
+          echo "  ok: downgrade preflight blocked (exit ${blocked_rc})"
+          expected_err="downgrade blocked on env \"test\": current version ${high_ver} is newer than incoming ${low_ver}; pass --allow-downgrade to permit"
+          if ! printf '%s' "${blocked_out}" | grep -qF "${expected_err}"; then
+            echo "::error::downgrade error text mismatch"
+            echo "::error::want: ${expected_err}"
+            printf 'got:\n%s\n' "${blocked_out}"
+            exit 1
+          fi
+          echo "  ok: error names env, current (${high_ver}), incoming (${low_ver}), and --allow-downgrade"
+
+          # Override leg: --allow-downgrade=true permits the promotion. Assert a
+          # clean exit, can_proceed=true, and the permit warning naming both
+          # versions, confirming the gate flips rather than silently passing.
+          allowed_out="$(cascade promote preflight \
+            --mode dev-to-test --config "${probe}" --allow-downgrade=true --json)"
+          can_proceed="$(printf '%s' "${allowed_out}" | jq -r '.can_proceed')"
+          assert_equal "downgrade permitted can_proceed" "${can_proceed}" "true"
+          permit_warn="$(printf '%s' "${allowed_out}" \
+            | jq -r '.warnings[]? | select(test("permitted via --allow-downgrade"))' | head -n1)"
+          assert_equal "downgrade permit warning" "${permit_warn}" \
+            "downgrade on test from ${high_ver} to ${low_ver} permitted via --allow-downgrade"
+          summarize "5c downgrade gate" "PASS" "test ${high_ver}<-${low_ver} blocked by default, proceeds with --allow-downgrade"
+
       - name: Step 6 - dry-run promote dev to test
         run: |
           set -euo pipefail
@@ -528,3 +611,91 @@ jobs:
             full_snapshot || echo "snapshot unavailable"
             echo '```'
           } >> "${GITHUB_STEP_SUMMARY}"
+
+  gen-time-checks:
+    name: gen-time checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: assert optional_depends_on order
+        shell: bash
+        run: |
+          set -euo pipefail
+          assert_eq() {
+            local label="$1" actual="$2" expected="$3"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::FAIL $label: expected '$expected' got '$actual'"
+              exit 1
+            fi
+            echo "PASS $label"
+          }
+
+          # build-docs.needs must contain build-app (it is [setup, build-app])
+          NEEDS=$(yq -o=json -I=0 '.jobs."build-docs".needs' .github/workflows/orchestrate.yaml)
+          assert_eq "build-docs.needs contains build-app" "$(echo "$NEEDS" | yq 'contains(["build-app"])' -)" "true"
+
+          # build-docs.if must equal the exact setup condition (no build-app.result in gate)
+          BUILD_DOCS_IF=$(yq '.jobs."build-docs".if' .github/workflows/orchestrate.yaml)
+          assert_eq "build-docs.if" "$BUILD_DOCS_IF" "needs.setup.outputs.run_build_docs == 'true'"
+
+          # build-docs.if must NOT contain build-app.result
+          if echo "$BUILD_DOCS_IF" | grep -q "build-app.result"; then
+            echo "::error::FAIL build-docs.if must not contain build-app.result, got: $BUILD_DOCS_IF"
+            exit 1
+          fi
+          echo "PASS build-docs.if does not gate on build-app.result"
+
+      - name: assert retry shims
+        shell: bash
+        run: |
+          set -euo pipefail
+          assert_eq() {
+            local label="$1" actual="$2" expected="$3"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::FAIL $label: expected '$expected' got '$actual'"
+              exit 1
+            fi
+            echo "PASS $label"
+          }
+
+          RETRY1_IF=$(yq '.jobs."build-app-retry-1".if' .github/workflows/orchestrate.yaml)
+          assert_eq "build-app-retry-1.if" "$RETRY1_IF" "needs.build-app.result == 'failure'"
+
+          RETRY1_NEEDS=$(yq -o=json -I=0 '.jobs."build-app-retry-1".needs' .github/workflows/orchestrate.yaml)
+          assert_eq "build-app-retry-1.needs" "$RETRY1_NEEDS" '["setup","build-app"]'
+
+          RETRY2_IF=$(yq '.jobs."build-app-retry-2".if' .github/workflows/orchestrate.yaml)
+          assert_eq "build-app-retry-2.if" "$RETRY2_IF" "needs.build-app-retry-1.result == 'failure'"
+
+          RETRY2_NEEDS=$(yq -o=json -I=0 '.jobs."build-app-retry-2".needs' .github/workflows/orchestrate.yaml)
+          assert_eq "build-app-retry-2.needs" "$RETRY2_NEEDS" '["setup","build-app-retry-1"]'
+
+      - name: assert merge-queue behavior
+        shell: bash
+        run: |
+          set -euo pipefail
+          assert_eq() {
+            local label="$1" actual="$2" expected="$3"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error::FAIL $label: expected '$expected' got '$actual'"
+              exit 1
+            fi
+            echo "PASS $label"
+          }
+
+          # file exists
+          [ -f .github/workflows/cascade-merge-queue.yaml ] || { echo "::error::cascade-merge-queue.yaml not found"; exit 1; }
+          echo "PASS cascade-merge-queue.yaml exists"
+
+          HAS_MG=$(yq '.on | has("merge_group")' .github/workflows/cascade-merge-queue.yaml)
+          assert_eq "merge_group trigger" "$HAS_MG" "true"
+
+          JOB_KEYS=$(yq -o=json -I=0 '.jobs | keys' .github/workflows/cascade-merge-queue.yaml)
+          assert_eq "merge-queue job key" "$JOB_KEYS" '["merge-queue-validate"]'
+
+          grep -q "cascade parse-config" .github/workflows/cascade-merge-queue.yaml || { echo "::error::cascade parse-config not found in merge-queue yaml"; exit 1; }
+          echo "PASS cascade parse-config present"
+
+          grep -q "cascade --dry-run orchestrate setup" .github/workflows/cascade-merge-queue.yaml || { echo "::error::cascade --dry-run orchestrate setup not found in merge-queue yaml"; exit 1; }
+          echo "PASS cascade --dry-run orchestrate setup present"

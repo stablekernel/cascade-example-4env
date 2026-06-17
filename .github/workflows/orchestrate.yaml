@@ -88,6 +88,24 @@ jobs:
       environment: ${{ github.event.inputs.environment || 'dev' }}
       sha: ${{ needs.setup.outputs.head_sha }}
 
+  build-app-retry-1:
+    name: Build (app) - Retry 1
+    needs: [setup, build-app]
+    if: needs.build-app.result == 'failure'
+    uses: ./.github/workflows/build-app.yaml
+    with:
+      environment: ${{ github.event.inputs.environment || 'dev' }}
+      sha: ${{ needs.setup.outputs.head_sha }}
+
+  build-app-retry-2:
+    name: Build (app) - Retry 2
+    needs: [setup, build-app-retry-1]
+    if: needs.build-app-retry-1.result == 'failure'
+    uses: ./.github/workflows/build-app.yaml
+    with:
+      environment: ${{ github.event.inputs.environment || 'dev' }}
+      sha: ${{ needs.setup.outputs.head_sha }}
+
   build-docs:
     name: Build (docs)
     needs: [setup, build-app]
@@ -111,7 +129,7 @@ jobs:
 
   finalize:
     name: Finalize
-    needs: [setup, build-app, build-docs, deploy-app]
+    needs: [setup, build-app, build-app-retry-1, build-app-retry-2, build-docs, deploy-app]
     if: always() && needs.setup.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 30
