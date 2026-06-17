@@ -118,7 +118,7 @@ jobs:
           # stale or concurrent dispatch could otherwise win. Prints the run
           # conclusion on success.
           wait_for_dispatched_run() {
-            local wf="$1" since="$2" attempts=30 i=0 run_id="" status conclusion
+            local wf="$1" since="$2" attempts=15 i=0 run_id="" status conclusion
             while [ "${i}" -lt "${attempts}" ]; do
               if [ -z "${run_id}" ]; then
                 run_id="$(gh run list --workflow "${wf}" --created ">=${since}" \
@@ -135,7 +135,7 @@ jobs:
                 fi
               fi
               i=$((i + 1))
-              sleep 10
+              sleep 60
             done
             echo "::error::timed out waiting for dispatched ${wf} run since ${since}"
             return 1
@@ -144,7 +144,7 @@ jobs:
           # keyed on headSha so a stale or concurrent run is never mistaken for
           # this one. Prints the run conclusion on success.
           wait_for_orchestrate_sha() {
-            local merge_sha="$1" attempts=30 i=0 run_id="" status conclusion
+            local merge_sha="$1" attempts=15 i=0 run_id="" status conclusion
             while [ "${i}" -lt "${attempts}" ]; do
               run_id="$(gh run list --workflow orchestrate.yaml --branch main \
                 --json databaseId,headSha,status \
@@ -160,7 +160,7 @@ jobs:
                 fi
               fi
               i=$((i + 1))
-              sleep 10
+              sleep 60
             done
             echo "::error::timed out waiting for orchestrate run for ${merge_sha}"
             return 1
@@ -198,14 +198,14 @@ jobs:
           # trunk and re-read until the env is populated (up to ~60s).
           sync_env_state() {
             local env="$1" i=0
-            while [ "${i}" -lt 5 ]; do
+            while [ "${i}" -lt 2 ]; do
               git fetch origin main --quiet
               git reset --hard origin/main >/dev/null
               if [ -n "$(state_version "${env}")" ]; then
                 return 0
               fi
               i=$((i + 1))
-              sleep 20
+              sleep 60
             done
             echo "::error::timed out waiting for ${env} state to land on trunk"
             return 1
@@ -217,14 +217,14 @@ jobs:
           # finalize state commit that actually changes it.
           sync_env_state_until_sha_changed() {
             local env="$1" prior_sha="$2" i=0
-            while [ "${i}" -lt 5 ]; do
+            while [ "${i}" -lt 2 ]; do
               git fetch origin main --quiet
               git reset --hard origin/main >/dev/null
               if [ -n "$(state_sha "${env}")" ] && [ "$(state_sha "${env}")" != "${prior_sha}" ]; then
                 return 0
               fi
               i=$((i + 1))
-              sleep 20
+              sleep 60
             done
             echo "::error::timed out waiting for ${env} sha to change from ${prior_sha} on trunk"
             return 1
@@ -360,7 +360,7 @@ jobs:
           # The promote finalize pushes prod's state commit moments after the run
           # reports success; poll until prod's version moves off the prior value.
           i=0
-          while [ "${i}" -lt 5 ]; do
+          while [ "${i}" -lt 2 ]; do
             git fetch origin main --quiet
             git reset --hard origin/main >/dev/null
             cur="$(state_version prod)"
@@ -368,7 +368,7 @@ jobs:
               break
             fi
             i=$((i + 1))
-            sleep 20
+            sleep 60
           done
           second_prod_ver="$(state_version prod)"
           assert_match "second prod version" "${second_prod_ver}" "${VERSION_RE}"
