@@ -198,14 +198,14 @@ jobs:
           # trunk and re-read until the env is populated (up to ~60s).
           sync_env_state() {
             local env="$1" i=0
-            while [ "${i}" -lt 20 ]; do
+            while [ "${i}" -lt 5 ]; do
               git fetch origin main --quiet
               git reset --hard origin/main >/dev/null
               if [ -n "$(state_version "${env}")" ]; then
                 return 0
               fi
               i=$((i + 1))
-              sleep 3
+              sleep 20
             done
             echo "::error::timed out waiting for ${env} state to land on trunk"
             return 1
@@ -217,14 +217,14 @@ jobs:
           # finalize state commit that actually changes it.
           sync_env_state_until_sha_changed() {
             local env="$1" prior_sha="$2" i=0
-            while [ "${i}" -lt 20 ]; do
+            while [ "${i}" -lt 5 ]; do
               git fetch origin main --quiet
               git reset --hard origin/main >/dev/null
               if [ -n "$(state_sha "${env}")" ] && [ "$(state_sha "${env}")" != "${prior_sha}" ]; then
                 return 0
               fi
               i=$((i + 1))
-              sleep 3
+              sleep 20
             done
             echo "::error::timed out waiting for ${env} sha to change from ${prior_sha} on trunk"
             return 1
@@ -360,7 +360,7 @@ jobs:
           # The promote finalize pushes prod's state commit moments after the run
           # reports success; poll until prod's version moves off the prior value.
           i=0
-          while [ "${i}" -lt 20 ]; do
+          while [ "${i}" -lt 5 ]; do
             git fetch origin main --quiet
             git reset --hard origin/main >/dev/null
             cur="$(state_version prod)"
@@ -368,7 +368,7 @@ jobs:
               break
             fi
             i=$((i + 1))
-            sleep 3
+            sleep 20
           done
           second_prod_ver="$(state_version prod)"
           assert_match "second prod version" "${second_prod_ver}" "${VERSION_RE}"
