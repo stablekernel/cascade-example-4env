@@ -422,6 +422,78 @@ jobs:
             "$(release_flag "${cur_ver}" isDraft)" "${cur_release_draft}"
           summarize "5 rollback prod" "PASS" "prod ${cur_ver} -> ${new_prod_ver}, diverged, releases untouched"
 
+      - name: Step 5b - rollback aborts state write when the re-deploy fails
+        run: |
+          set -euo pipefail
+          # Gap 1: a rollback whose re-deploy FAILS must leave trunk state exactly
+          # where it was. prod is currently rolled back to the prior version with
+          # ref=rollback/prod (Step 5). Force the deploy stub to exit non-zero via
+          # the FORCE_DEPLOY_FAIL repo variable, dispatch a non-dry-run rollback so
+          # the re-deploy actually runs, and assert the run concludes failure and
+          # prod's version/sha are UNCHANGED (finalize aborts the state write on a
+          # failed in-scope deploy, exactly as the local harness proves).
+          prior_ver="$(state_version prod)"
+          prior_sha="$(state_sha prod)"
+          gh variable set FORCE_DEPLOY_FAIL --body true --repo "${GITHUB_REPOSITORY}"
+          ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          gh workflow run cascade-rollback.yaml -f environment=prod -f dry_run=false
+          conclusion="$(wait_for_dispatched_run cascade-rollback.yaml "${ts}")"
+          assert_equal "rollback-on-failed-deploy conclusion" "${conclusion}" "failure"
+          # Re-sync trunk and assert nothing moved: the finalize state write must
+          # have been aborted, so version and sha hold their pre-dispatch values
+          # and no NEW rollback ref divergence was introduced.
+          git fetch origin main --quiet
+          git reset --hard origin/main >/dev/null
+          after_ver="$(state_version prod)"
+          after_sha="$(state_sha prod)"
+          assert_equal "prod version unchanged after failed deploy" "${after_ver}" "${prior_ver}"
+          assert_equal "prod sha unchanged after failed deploy" "${after_sha}" "${prior_sha}"
+          summarize "5b failed-deploy rollback" "PASS" "run failed, prod ${after_ver} state write aborted"
+
+      - name: Step 5b cleanup - clear FORCE_DEPLOY_FAIL
+        if: always()
+        run: |
+          set -euo pipefail
+          # Mandatory: a stranded FORCE_DEPLOY_FAIL=true reds every later deploy in
+          # this and every future fleet run (and the README badge), so reset it on
+          # success AND on failure.
+          gh variable set FORCE_DEPLOY_FAIL --body false --repo "${GITHUB_REPOSITORY}"
+          summarize "5b cleanup" "PASS" "FORCE_DEPLOY_FAIL reset to false"
+
+      - name: Step 5e - roll-forward rejoins the rolled-back prod env
+        run: |
+          set -euo pipefail
+          # Gap 2: a forward promotion onto a rolled-back env ends the divergence.
+          # prod still carries ref=rollback/prod from Step 5 (Step 5b aborted, so
+          # the divergence stands). Confirm the diverged start, then roll forward by
+          # cascading the newer dev artifact onto prod (the Step 4b dev-to-prod
+          # idiom). The rejoin clears the divergence fields: ref and base_sha read
+          # back empty, mirroring the local rollforward-rejoins-rolledback proof.
+          assert_equal "prod diverged before rejoin" "$(state_ref prod)" "rollback/prod"
+          rolledback_ver="$(state_version prod)"
+          ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          gh workflow run promote.yaml -f mode=dev-to-prod -f dry_run=false
+          conclusion="$(wait_for_dispatched_run promote.yaml "${ts}")"
+          assert_equal "roll-forward dev-to-prod conclusion" "${conclusion}" "success"
+          # The promote finalize pushes prod's rejoin state commit moments after the
+          # run reports success; poll until prod moves off the rolled-back version.
+          i=0
+          while [ "${i}" -lt 2 ]; do
+            git fetch origin main --quiet
+            git reset --hard origin/main >/dev/null
+            cur="$(state_version prod)"
+            if [ -n "${cur}" ] && [ "${cur}" != "${rolledback_ver}" ]; then
+              break
+            fi
+            i=$((i + 1))
+            sleep 60
+          done
+          after_ref="$(cascade status env prod --json | jq -r '.state.ref // empty')"
+          after_base_sha="$(cascade status env prod --json | jq -r '.state.base_sha // empty')"
+          assert_equal "prod rejoin clears ref" "${after_ref}" ""
+          assert_equal "prod rejoin clears base_sha" "${after_base_sha}" ""
+          summarize "5e roll-forward rejoin" "PASS" "prod rejoined, ref and base_sha cleared"
+
       - name: Step 5c - downgrade gate
         run: |
           set -euo pipefail
