@@ -9,7 +9,7 @@ ci:
             - test
             - staging
             - prod
-        cli_version: v0.2.1-rc.1
+        cli_version: v0.2.1-rc.2
         state_token: ${{ secrets.CASCADE_STATE_TOKEN }}
         manifest_file: .github/manifest.yaml
         manifest_key: ci
@@ -54,7 +54,7 @@ ci:
     state:
         dev:
             sha: d3fe63e083d7d7bfafc18b3d8efdaccc4f5589f2
-            version: v2.0.0-rc.0
+            version: v0.2.1-rc.2
             committed_at: "2026-06-18T14:03:30Z"
             committed_by: joshua-temple
             deploys:
@@ -102,42 +102,42 @@ ci:
                   committed_by: joshua-temple
         staging:
             sha: d3fe63e083d7d7bfafc18b3d8efdaccc4f5589f2
-            version: v2.0.0-rc.0
+            version: v0.2.1-rc.2
             committed_at: "2026-06-18T14:04:36Z"
             committed_by: joshua-temple
             deploys:
                 app:
                     sha: d3fe63e083d7d7bfafc18b3d8efdaccc4f5589f2
-                    version: v2.0.0-rc.0
+                    version: v0.2.1-rc.2
                     deployed_at: "2026-06-18T14:04:36Z"
                     deployed_by: joshua-temple
             previous:
                 - sha: 7e02a708512938032c6e1924a07f3357d7906f3e
-                  version: v1.1.0-rc.0
+                  version: v0.2.1-rc.2
                   committed_at: "2026-06-18T13:59:53Z"
                   committed_by: joshua-temple
                 - sha: 3fdc84b70b9cbaf67c67e3e7bc43a83ddf327c42
-                  version: v1.0.0-rc.0
+                  version: v0.2.1-rc.2
                   committed_at: "2026-06-18T13:56:38Z"
                   committed_by: joshua-temple
         test:
             sha: d3fe63e083d7d7bfafc18b3d8efdaccc4f5589f2
-            version: v2.0.0-rc.0
+            version: v0.2.1-rc.2
             committed_at: "2026-06-18T14:04:36Z"
             committed_by: joshua-temple
             deploys:
                 app:
                     sha: d3fe63e083d7d7bfafc18b3d8efdaccc4f5589f2
-                    version: v2.0.0-rc.0
+                    version: v0.2.1-rc.2
                     deployed_at: "2026-06-18T14:04:36Z"
                     deployed_by: joshua-temple
             previous:
                 - sha: 7e02a708512938032c6e1924a07f3357d7906f3e
-                  version: v1.1.0-rc.0
+                  version: v0.2.1-rc.2
                   committed_at: "2026-06-18T13:59:53Z"
                   committed_by: joshua-temple
                 - sha: 3fdc84b70b9cbaf67c67e3e7bc43a83ddf327c42
-                  version: v1.0.0-rc.0
+                  version: v0.2.1-rc.2
                   committed_at: "2026-06-18T13:55:35Z"
                   committed_by: joshua-temple
     latest_release:
