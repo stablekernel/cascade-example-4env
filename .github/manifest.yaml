@@ -63,7 +63,17 @@ ci:
                     deployed_at: "2026-06-19T10:32:04Z"
                     deployed_by: joshua-temple
         prod: {}
-        staging: {}
+        staging:
+            sha: 537a6ac5c1d73bc40ce0041c633f25bf58ade393
+            version: v1.0.0-rc.0
+            committed_at: "2026-06-19T10:34:10Z"
+            committed_by: joshua-temple
+            deploys:
+                app:
+                    sha: 537a6ac5c1d73bc40ce0041c633f25bf58ade393
+                    version: v1.0.0-rc.0
+                    deployed_at: "2026-06-19T10:34:10Z"
+                    deployed_by: joshua-temple
         test:
             sha: 537a6ac5c1d73bc40ce0041c633f25bf58ade393
             version: v1.0.0-rc.0
