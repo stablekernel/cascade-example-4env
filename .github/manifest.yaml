@@ -9,7 +9,7 @@ ci:
             - test
             - staging
             - prod
-        cli_version: v0.3.0-rc.21
+        cli_version: v0.3.0-rc.22
         state_token: ${{ secrets.CASCADE_STATE_TOKEN }}
         manifest_file: .github/manifest.yaml
         manifest_key: ci
@@ -54,7 +54,7 @@ ci:
     state:
         dev:
             sha: 1f14c6b0e416c274b080cffd137b289d5ee04ff1
-            version: v1.0.1-rc.0
+            version: v0.3.0-rc.22
             committed_at: "2026-06-23T04:13:00Z"
             committed_by: joshua-temple
             deploys:
@@ -65,13 +65,13 @@ ci:
         prod: {}
         staging:
             sha: cc35d23dd3437c4894de611a24eb4e8773484af0
-            version: v1.0.0-rc.0.hotfix.2
+            version: v0.3.0-rc.22.hotfix.2
             committed_at: "2026-06-23T04:14:25Z"
             committed_by: joshua-temple
             deploys:
                 app:
                     sha: 33107d94afd2028984d4fef0e0650040b451ed9f
-                    version: v1.0.0-rc.0
+                    version: v0.3.0-rc.22
                     deployed_at: "2026-06-23T04:11:33Z"
                     deployed_by: joshua-temple
             ref: env/staging
@@ -80,18 +80,18 @@ ci:
                 - cf960795cf5671a2b8be3aac62cfcbae17e6e195
             previous:
                 - sha: 33107d94afd2028984d4fef0e0650040b451ed9f
-                  version: v1.0.0-rc.0
+                  version: v0.3.0-rc.22
                   committed_at: "2026-06-23T04:11:33Z"
                   committed_by: joshua-temple
         test:
             sha: 15e929bf52b7973b1c883f3feb743530f0414ea5
-            version: v1.0.0-rc.0.hotfix.1
+            version: v0.3.0-rc.22.hotfix.1
             committed_at: "2026-06-23T04:14:15Z"
             committed_by: joshua-temple
             deploys:
                 app:
                     sha: 33107d94afd2028984d4fef0e0650040b451ed9f
-                    version: v1.0.0-rc.0
+                    version: v0.3.0-rc.22
                     deployed_at: "2026-06-23T04:10:22Z"
                     deployed_by: joshua-temple
             ref: env/test
@@ -100,6 +100,6 @@ ci:
                 - cf960795cf5671a2b8be3aac62cfcbae17e6e195
             previous:
                 - sha: 33107d94afd2028984d4fef0e0650040b451ed9f
-                  version: v1.0.0-rc.0
+                  version: v0.3.0-rc.22
                   committed_at: "2026-06-23T04:10:22Z"
                   committed_by: joshua-temple
