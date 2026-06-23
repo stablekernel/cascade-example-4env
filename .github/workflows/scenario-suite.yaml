@@ -467,13 +467,64 @@ jobs:
           summarize "3h multi-env hotfix" "PASS" \
             "test+staging diverged with both patches; dev+prod untouched"
 
-      - name: Step 4 - promote staging to prod
+      - name: Step 4 - diverged staging is blocked from promoting to prod
         run: |
           set -euo pipefail
+          # Step 3h left staging diverged onto env/staging carrying two non-trunk
+          # hotfix patches. The divergence guard MUST refuse to read a promotion
+          # source from that diverged env: a non-trunk SHA may not propagate
+          # upward to prod. Dispatch staging-to-prod and assert it FAILS, then
+          # tie the failure to the guard by grepping the run log for the guard
+          # message so an unrelated failure can never satisfy this assertion.
           ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh workflow run promote.yaml -f mode=staging-to-prod -f dry_run=false
-          conclusion="$(wait_for_dispatched_run promote.yaml "${ts}")"
-          assert_equal "promote staging-to-prod conclusion" "${conclusion}" "success"
+          # Capture the run id the same way wait_for_dispatched_run keys on it, so
+          # the log fetch reads THIS dispatch and not a stale or concurrent run.
+          run_id=""
+          for _ in $(seq 1 15); do
+            if [ -z "${run_id}" ]; then
+              run_id="$(gh run list --workflow promote.yaml --created ">=${ts}" \
+                --json databaseId --jq '.[0].databaseId // empty')"
+            fi
+            if [ -n "${run_id}" ]; then
+              status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
+              [ "${status}" = "completed" ] && break
+            fi
+            sleep 60
+          done
+          if [ -z "${run_id}" ]; then
+            echo "::error::could not locate the dispatched staging-to-prod run"
+            exit 1
+          fi
+          conclusion="$(gh run view "${run_id}" --json conclusion --jq '.conclusion // "none"')"
+          assert_equal "diverged staging-to-prod blocked" "${conclusion}" "failure"
+          # The preflight failure must be the divergence guard specifically. Grep
+          # the failed run log for both halves of the guard message; a bare
+          # failure (e.g. infra) would not carry this text and must not pass.
+          guard_log="$(gh run view "${run_id}" --log-failed 2>/dev/null \
+            || gh run view "${run_id}" --log 2>/dev/null || echo '')"
+          if ! printf '%s' "${guard_log}" | grep -qF 'cannot promote from diverged environment'; then
+            echo "::error::staging-to-prod failed but not via the divergence guard"
+            echo "::error::expected log to mention 'cannot promote from diverged environment'"
+            exit 1
+          fi
+          if ! printf '%s' "${guard_log}" | grep -qF 'must not propagate upward'; then
+            echo "::error::guard message incomplete; expected 'must not propagate upward'"
+            exit 1
+          fi
+          echo "  ok: divergence guard refused staging-to-prod (diverged source)"
+          # prod must stay UNPUBLISHED: the blocked promote writes no state.
+          sync_env_state staging
+          assert_equal "prod still unset after blocked promote" "$(state_version prod)" ""
+          # Publish prod via the guard's own sanctioned escape hatch: promote from
+          # a lower, non-diverged env. dev is on the linear line (Step 3h asserted
+          # it untouched), so dev-to-prod carries a clean trunk SHA to prod. This
+          # keeps the downstream rollback steps meaningful (they need a published
+          # prod with two distinct versions in its deploy-history ring).
+          ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          gh workflow run promote.yaml -f mode=dev-to-prod -f dry_run=false
+          clean="$(wait_for_dispatched_run promote.yaml "${ts}")"
+          assert_equal "clean dev-to-prod promote conclusion" "${clean}" "success"
           # Poll trunk until the promote's state commit for prod lands.
           sync_env_state prod
           prod_ver="$(state_version prod)"
@@ -483,7 +534,8 @@ jobs:
           assert_equal "published release is latest" "$(gh release list --json tagName,isLatest --jq ".[] | select(.tagName==\"${prod_ver}\") | .isLatest" 2>/dev/null || echo missing)" "true"
           remaining_rc="$(git ls-remote --tags origin '*-rc.*' | wc -l | tr -d ' ')"
           assert_equal "rc tags cleaned up" "${remaining_rc}" "0"
-          summarize "4 staging->prod" "PASS" "published ${prod_ver} latest, rc tags cleaned"
+          summarize "4 diverged staging blocked" "PASS" \
+            "staging->prod refused by divergence guard; prod published ${prod_ver} via dev-to-prod"
 
       - name: Step 4b - second cascade publishes a newer prod version
         run: |
