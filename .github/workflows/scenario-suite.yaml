@@ -318,6 +318,155 @@ jobs:
           assert_equal "release no longer draft" "$(release_flag "${rc_tag}" isDraft)" "false"
           summarize "3 test->staging" "PASS" "staging prerelease at ${staging_ver}"
 
+      # ---------------------------------------------------------------------
+      # Step 3h - multi-env hotfix: elevate a SET of trunk commits to a
+      # MID-chain env. The four-env chain is [dev, test, staging, prod]; a
+      # hotfix targeting staging applies the patch set bottom-up to every
+      # intermediate env between the build target and the requested target,
+      # i.e. [test, staging]. The FIRST env (dev) is excluded by the planner
+      # and the env ABOVE the target (prod) is never reached, so both stay on
+      # the linear promotion line with no divergence. This is the per-env
+      # spread the multi-commit / multi-env hotfix produces, and the value the
+      # live fleet adds over the in-repo e2e (which runs against gitea).
+      #
+      # Preconditions met here: Step 3 left dev, test, and staging carrying RC
+      # versions and SHAs, and prod is still unset (Step 4 publishes it). The
+      # generated cascade-hotfix.yaml takes a comma-delimited commit SET via the
+      # `commit` input (passed to the CLI as --commits) and opens one
+      # cascade-hotfix PR per chain env into env/<env>, auto-merging clean
+      # cherry-picks. The repository must allow auto-merge.
+      # ---------------------------------------------------------------------
+      - name: Step 3h - seed two trunk fixes and dispatch multi-env hotfix
+        id: hotfix_multi_seed
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The chain anchors on the target env's recorded SHA and walks the
+          # intermediate envs, so both test and staging must carry state.
+          sync_env_state test
+          sync_env_state staging
+          for e in test staging; do
+            if [ -z "$(state_version "${e}")" ] || [ -z "$(state_sha "${e}")" ]; then
+              echo "::error::hotfix precondition: state.${e} version/sha empty"
+              exit 1
+            fi
+          done
+
+          # Capture the untouched-env baselines BEFORE the hotfix runs. dev is
+          # the first env (planner excludes it from the chain) and is already
+          # seeded from Step 1; prod sits above the target and is still unset.
+          # Both must read back identically after the hotfix.
+          dev_sha_before="$(state_sha dev)"
+          dev_ref_before="$(state_ref dev)"
+
+          # Reset every chain env branch to the trunk tip so the cherry-picks
+          # are deterministic across re-runs. Without this, env/test and
+          # env/staging accumulate prior-run hotfix commits and conflict. The
+          # force-push uses the CASCADE_STATE_TOKEN-authenticated remote (admin
+          # PAT) to bypass branch protection. In-suite git only, no GPG signing.
+          git fetch origin main --quiet
+          main_sha="$(git rev-parse origin/main)"
+          push_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          for e in test staging; do
+            git push --force "${push_remote}" "${main_sha}:refs/heads/env/${e}" \
+              || { echo "::error::failed to reset env/${e} to main"; exit 1; }
+          done
+
+          # Land TWO fresh fixes on trunk in run-unique files so the set never
+          # conflicts with itself or with prior-run residue. Each lands via a
+          # PAT-authored branch -> PR -> squash merge, mirroring a real
+          # contributor; the squash merge SHA on main is the hotfix commit.
+          fixes=""
+          for n in 1 2; do
+            branch="scenario/hotfix-multi-${n}-$(date +%s)-${RANDOM}"
+            git fetch origin main --quiet
+            git checkout -B "${branch}" origin/main
+            mkdir -p src
+            fix_file="src/hotfix-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}-${n}.txt"
+            echo "// multi-env hotfix change ${n} $(date -u +%FT%TWZ)" > "${fix_file}"
+            git add "${fix_file}"
+            git commit --no-gpg-sign -s -m "fix: multi-env hotfix patch ${n}"
+            git push origin "${branch}"
+            gh pr create --base main --head "${branch}" \
+              --title "fix: multi-env hotfix patch ${n}" \
+              --body "Trunk fix ${n} elevated to staging via the hotfix chain."
+            gh pr merge "${branch}" --squash --delete-branch
+            git fetch origin main --quiet
+            sha="$(git rev-parse origin/main)"
+            fixes="${fixes:+${fixes},}${sha}"
+          done
+
+          # The second fix merge also triggers orchestrate (src/** changed). Let
+          # it settle dev before the hotfix targets staging so the two flows do
+          # not contend on trunk state writes, then re-capture dev's baseline so
+          # the no-clobber assert compares like-for-like.
+          orchestrate="$(wait_for_orchestrate_sha "${sha}")"
+          assert_equal "seed orchestrate conclusion" "${orchestrate}" "success"
+          sync_env_state dev
+          dev_sha_before="$(state_sha dev)"
+          dev_ref_before="$(state_ref dev)"
+
+          ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          gh workflow run cascade-hotfix.yaml \
+            -f commit="${fixes}" -f target_env=staging -f dry_run=false \
+            || { echo "::error::failed to dispatch multi-env hotfix"; exit 1; }
+          {
+            echo "commits=${fixes}"
+            echo "dispatch_ts=${ts}"
+            echo "dev_sha_before=${dev_sha_before}"
+            echo "dev_ref_before=${dev_ref_before}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "dispatched multi-env hotfix [${fixes}] -> staging"
+
+      - name: Step 3h - await chain and assert per-env divergence
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+        run: |
+          set -euo pipefail
+          conclusion="$(wait_for_dispatched_run cascade-hotfix.yaml \
+            "${{ steps.hotfix_multi_seed.outputs.dispatch_ts }}")"
+          assert_equal "multi-env hotfix conclusion" "${conclusion}" "success"
+
+          # The chain opens and merges one cascade-hotfix PR per env (test, then
+          # staging), then each PR-close run finalizes that env's divergence
+          # state. Poll trunk until staging (the last chain env) records its
+          # divergence ref, then read every env back.
+          ref=""
+          for _ in 1 2 3 4 5; do
+            git fetch origin main --quiet
+            git reset --hard origin/main >/dev/null
+            ref="$(state_ref staging)"
+            [ "${ref}" = "env/staging" ] && break
+            sleep 60
+          done
+
+          IFS=',' read -r c1 c2 <<<"${{ steps.hotfix_multi_seed.outputs.commits }}"
+          # Both intermediate envs must diverge onto their env/<env> ref, carry
+          # an RC hotfix version, and record BOTH seeded SHAs in patches.
+          for e in test staging; do
+            assert_equal "hotfix ${e} diverged ref" "$(state_ref "${e}")" "env/${e}"
+            assert_match "hotfix ${e} version" "$(state_version "${e}")" '\-rc\..*\.hotfix\.[0-9]+$'
+            patches="$(cascade status env "${e}" --json | jq -r '.state.patches[]? // empty')"
+            echo "${patches}" | grep -qF "${c1}" \
+              || { echo "::error::${e} patches missing ${c1}; got: ${patches}"; exit 1; }
+            echo "${patches}" | grep -qF "${c2}" \
+              || { echo "::error::${e} patches missing ${c2}; got: ${patches}"; exit 1; }
+          done
+
+          # The first env (dev) and the env above the target (prod) are outside
+          # the chain: no divergence ref, and dev's sha is byte-identical to its
+          # pre-hotfix baseline. prod is still unset at this point in the ladder,
+          # so it carries no ref and no sha.
+          assert_equal "dev untouched ref" "$(state_ref dev)" \
+            "${{ steps.hotfix_multi_seed.outputs.dev_ref_before }}"
+          assert_equal "dev sha unchanged" "$(state_sha dev)" \
+            "${{ steps.hotfix_multi_seed.outputs.dev_sha_before }}"
+          assert_equal "prod untouched ref" "$(state_ref prod)" ""
+          assert_equal "prod sha still unset" "$(state_sha prod)" ""
+          summarize "3h multi-env hotfix" "PASS" \
+            "test+staging diverged with both patches; dev+prod untouched"
+
       - name: Step 4 - promote staging to prod
         run: |
           set -euo pipefail
