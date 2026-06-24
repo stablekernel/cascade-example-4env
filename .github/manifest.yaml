@@ -62,46 +62,64 @@ ci:
                     sha: 4e0c1a8d85f2c99a6b837f510dafbd564d23b567
                     deployed_at: "2026-06-24T23:29:53Z"
                     deployed_by: joshua-temple
-        prod: {}
-        staging:
-            sha: 3f0d06524bd19b713adeff62ad76383f36e350d8
-            version: v1.0.0-rc.0.hotfix.2
-            committed_at: "2026-06-24T23:31:34Z"
+        prod:
+            sha: 4e0c1a8d85f2c99a6b837f510dafbd564d23b567
+            version: v1.0.1
+            committed_at: "2026-06-24T23:33:56Z"
             committed_by: joshua-temple
             deploys:
                 app:
-                    sha: d85de3a6cc611e165fed1165d73294512b214615
-                    version: v1.0.0-rc.0
-                    deployed_at: "2026-06-24T23:28:12Z"
+                    sha: 4e0c1a8d85f2c99a6b837f510dafbd564d23b567
+                    version: v1.0.1
+                    deployed_at: "2026-06-24T23:33:56Z"
                     deployed_by: joshua-temple
-            ref: env/staging
-            base_sha: d85de3a6cc611e165fed1165d73294512b214615
-            patches:
-                - 65088ccfee79619ecd59ffaaac18bf5f6e27c57c
-                - 4e0c1a8d85f2c99a6b837f510dafbd564d23b567
+        release:
+            sha: 4e0c1a8d85f2c99a6b837f510dafbd564d23b567
+            version: v1.0.1
+            committed_at: "2026-06-24T23:33:56Z"
+            committed_by: joshua-temple
+        staging:
+            sha: 4e0c1a8d85f2c99a6b837f510dafbd564d23b567
+            version: v1.0.1-rc.0
+            committed_at: "2026-06-24T23:33:56Z"
+            committed_by: joshua-temple
+            deploys:
+                app:
+                    sha: 4e0c1a8d85f2c99a6b837f510dafbd564d23b567
+                    version: v1.0.1-rc.0
+                    deployed_at: "2026-06-24T23:33:56Z"
+                    deployed_by: joshua-temple
             previous:
+                - sha: 3f0d06524bd19b713adeff62ad76383f36e350d8
+                  version: v1.0.0-rc.0.hotfix.2
+                  committed_at: "2026-06-24T23:31:34Z"
+                  committed_by: joshua-temple
                 - sha: d85de3a6cc611e165fed1165d73294512b214615
                   version: v1.0.0-rc.0
                   committed_at: "2026-06-24T23:28:12Z"
                   committed_by: joshua-temple
         test:
-            sha: 902bc2607d7bcd44ba63640dc5b7f84744095ee0
-            version: v1.0.0-rc.0.hotfix.1
-            committed_at: "2026-06-24T23:31:02Z"
+            sha: 4e0c1a8d85f2c99a6b837f510dafbd564d23b567
+            version: v1.0.1-rc.0
+            committed_at: "2026-06-24T23:33:56Z"
             committed_by: joshua-temple
             deploys:
                 app:
-                    sha: d85de3a6cc611e165fed1165d73294512b214615
-                    version: v1.0.0-rc.0
-                    deployed_at: "2026-06-24T23:27:04Z"
+                    sha: 4e0c1a8d85f2c99a6b837f510dafbd564d23b567
+                    version: v1.0.1-rc.0
+                    deployed_at: "2026-06-24T23:33:56Z"
                     deployed_by: joshua-temple
-            ref: env/test
-            base_sha: d85de3a6cc611e165fed1165d73294512b214615
-            patches:
-                - 65088ccfee79619ecd59ffaaac18bf5f6e27c57c
-                - 4e0c1a8d85f2c99a6b837f510dafbd564d23b567
             previous:
+                - sha: 902bc2607d7bcd44ba63640dc5b7f84744095ee0
+                  version: v1.0.0-rc.0.hotfix.1
+                  committed_at: "2026-06-24T23:31:02Z"
+                  committed_by: joshua-temple
                 - sha: d85de3a6cc611e165fed1165d73294512b214615
                   version: v1.0.0-rc.0
                   committed_at: "2026-06-24T23:27:04Z"
                   committed_by: joshua-temple
+    latest_release:
+        version: v1.0.1
+        sha: 4e0c1a8d85f2c99a6b837f510dafbd564d23b567
+        released_on: "2026-06-24T23:33:56Z"
+        released_by: joshua-temple
