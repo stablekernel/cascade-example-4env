@@ -38,7 +38,24 @@ jobs:
       # Source for the revalidation request, taken from the event payload via env
       # to avoid injecting payload text into shell scripts.
       REVALIDATE_SOURCE: ${{ github.event.client_payload.source }}
+    outputs:
+      # Captured before anything is dispatched. The reconcile job enumerates
+      # every run this repo produced at or after this instant and fails if any
+      # is unaccounted for in the ledger. Recorded first so no run the suite
+      # causes can fall outside the window.
+      window-start: ${{ steps.window.outputs.window-start }}
     steps:
+      # The reconcile window opens here, before the first dispatch or merge.
+      # Every run the suite goes on to cause lands at or after this timestamp,
+      # so the reconcile job sees all of them.
+      - name: Open reconcile window
+        id: window
+        run: |
+          set -euo pipefail
+          WINDOW_START="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "window-start=$WINDOW_START" >> "$GITHUB_OUTPUT"
+          echo "reconcile window opened at $WINDOW_START"
+
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
@@ -124,6 +141,12 @@ jobs:
                 run_id="$(gh run list --workflow "${wf}" --created ">=${since}" \
                   --json databaseId,headBranch,status \
                   --jq '.[0].databaseId // empty')"
+                # Expose the resolved run id to the caller (write once) so the
+                # following register-run step can record it in the reconcile
+                # ledger. Side channel only; stdout still carries the conclusion.
+                if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ]; then
+                  echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
+                fi
               fi
               if [ -n "${run_id}" ]; then
                 status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
@@ -150,6 +173,13 @@ jobs:
                 --json databaseId,headSha,status \
                 --jq ".[] | select(.headSha==\"${merge_sha}\") | .databaseId" \
                 | head -n1)"
+              # Expose the resolved orchestrate run id to the caller (write once)
+              # so the following register-run step can record it in the reconcile
+              # ledger. Side channel only; stdout still carries the conclusion.
+              if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ] \
+                && [ ! -s "${RESOLVED_RUN_ID_FILE}" ]; then
+                echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
+              fi
               if [ -n "${run_id}" ]; then
                 status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
                 if [ "${status}" = "completed" ]; then
@@ -254,6 +284,7 @@ jobs:
           summarize "parse-config" "PASS" "manifest ${MANIFEST} key ${MANIFEST_KEY} parses"
 
       - name: Step 1 - reset and seed dev
+        id: step1
         env:
           GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
         run: |
@@ -269,7 +300,9 @@ jobs:
             "build stamp ${stamp}" \
             "feat: seed validation marker ${stamp}")"
           echo "Waiting for orchestrate run on merge SHA: ${merge_sha}"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step1-orchestrate-run-id"
           orchestrate="$(wait_for_orchestrate_sha "${merge_sha}")"
+          echo "orchestrate_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           # Refresh local checkout - orchestrate's finalize job pushes a state-update
           # commit to main a few seconds after the workflow completes; poll trunk
           # until dev carries a version before reading it back, otherwise cascade
@@ -285,13 +318,24 @@ jobs:
           assert_match "dev version" "${dev_ver}" "${RC_RE}"
           summarize "1 reset+seed" "PASS" "Deployed: dev at ${dev_ver} draft rc.0"
 
+      - name: Register Step 1 seed orchestrate run
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step1.outputs.orchestrate_run_id }}
+          expected-conclusion: success
+          reason: step1-seed-orchestrate
+          upload: 'true'
+
       - name: Step 2 - promote dev to test
+        id: step2
         run: |
           set -euo pipefail
           dev_ver="$(state_version dev)"
           ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step2-promote-run-id"
           gh workflow run promote.yaml -f mode=dev-to-test -f dry_run=false
           conclusion="$(wait_for_dispatched_run promote.yaml "${ts}")"
+          echo "promote_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "promote dev-to-test conclusion" "${conclusion}" "success"
           # Poll trunk until the promote's state commit for test lands.
           sync_env_state test
@@ -302,12 +346,23 @@ jobs:
           assert_equal "release still draft" "$(release_flag "${rc_tag}" isDraft)" "true"
           summarize "2 dev->test" "PASS" "test at ${test_ver}, release draft rc.0"
 
+      - name: Register Step 2 promote dev-to-test run
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step2.outputs.promote_run_id }}
+          expected-conclusion: success
+          reason: step2-promote-dev-to-test
+          upload: 'true'
+
       - name: Step 3 - promote test to staging
+        id: step3
         run: |
           set -euo pipefail
           ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step3-promote-run-id"
           gh workflow run promote.yaml -f mode=test-to-staging -f dry_run=false
           conclusion="$(wait_for_dispatched_run promote.yaml "${ts}")"
+          echo "promote_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "promote test-to-staging conclusion" "${conclusion}" "success"
           # Poll trunk until the promote's state commit for staging lands.
           sync_env_state staging
@@ -317,6 +372,14 @@ jobs:
           assert_equal "release is prerelease" "$(release_flag "${rc_tag}" isPrerelease)" "true"
           assert_equal "release no longer draft" "$(release_flag "${rc_tag}" isDraft)" "false"
           summarize "3 test->staging" "PASS" "staging prerelease at ${staging_ver}"
+
+      - name: Register Step 3 promote test-to-staging run
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step3.outputs.promote_run_id }}
+          expected-conclusion: success
+          reason: step3-promote-test-to-staging
+          upload: 'true'
 
       # ---------------------------------------------------------------------
       # Step 3h - multi-env hotfix: elevate a SET of trunk commits to a
@@ -400,8 +463,14 @@ jobs:
           # The second fix merge also triggers orchestrate (src/** changed). Let
           # it settle dev before the hotfix targets staging so the two flows do
           # not contend on trunk state writes, then re-capture dev's baseline so
-          # the no-clobber assert compares like-for-like.
+          # the no-clobber assert compares like-for-like. The FIRST fix merge also
+          # touches src/** and may fire an orchestrate run that orchestrate's own
+          # concurrency cancels in favor of this second one; that superseded run
+          # is benign and is intentionally NOT registered (it shares the
+          # workflow + main lane with the run registered here, which excuses it).
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step3h-seed-orchestrate-run-id"
           orchestrate="$(wait_for_orchestrate_sha "${sha}")"
+          echo "seed_orchestrate_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "seed orchestrate conclusion" "${orchestrate}" "success"
           sync_env_state dev
           dev_sha_before="$(state_sha dev)"
@@ -420,12 +489,15 @@ jobs:
           echo "dispatched multi-env hotfix [${fixes}] -> staging"
 
       - name: Step 3h - await chain and assert per-env divergence
+        id: hotfix_await
         env:
           GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
         run: |
           set -euo pipefail
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step3h-hotfix-dispatch-run-id"
           conclusion="$(wait_for_dispatched_run cascade-hotfix.yaml \
             "${{ steps.hotfix_multi_seed.outputs.dispatch_ts }}")"
+          echo "dispatch_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "multi-env hotfix conclusion" "${conclusion}" "success"
 
           # The chain opens and merges one cascade-hotfix PR per env (test, then
@@ -467,7 +539,71 @@ jobs:
           summarize "3h multi-env hotfix" "PASS" \
             "test+staging diverged with both patches; dev+prod untouched"
 
+          # Resolve the two pull_request-triggered Cascade Hotfix Finalize runs,
+          # one per chain env (env/test and env/staging). The chain opens a
+          # cascade-hotfix PR into each env branch; when it merges, a Finalize run
+          # fires on the PR head branch keyed on the pull_request event. The suite
+          # historically never inspected these (the fire-and-forget gap), so resolve
+          # each, watch it to a success conclusion, and emit its run id so the
+          # following register-run steps record both in the reconcile ledger. There
+          # is NO env-branch gate workflow in this repo, so no gate run to resolve.
+          for e in test staging; do
+            pr_head="$(gh pr list --base "env/${e}" --state all --label cascade-hotfix \
+              --json number,headRefName --jq 'sort_by(.number) | last | .headRefName' \
+              2>/dev/null || echo "")"
+            [ -n "${pr_head}" ] \
+              || { echo "::error::no merged cascade-hotfix PR found into env/${e}"; exit 1; }
+            finalize_run_id=""
+            for _ in $(seq 1 15); do
+              finalize_run_id="$(gh run list --workflow=cascade-hotfix.yaml \
+                --branch "${pr_head}" --event pull_request \
+                --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")"
+              [ -n "${finalize_run_id}" ] && break
+              sleep 60
+            done
+            [ -n "${finalize_run_id}" ] \
+              || { echo "::error::no pull_request Cascade Hotfix finalize run for env/${e} head ${pr_head}"; exit 1; }
+            gh run watch "${finalize_run_id}" --interval 60 --exit-status \
+              || { echo "::error::env/${e} finalize run ${finalize_run_id} did not conclude success"; exit 1; }
+            echo "finalize_${e}_run_id=${finalize_run_id}" >> "${GITHUB_OUTPUT}"
+            echo "env/${e} finalize (pull_request) run ${finalize_run_id} concluded success"
+          done
+
+      - name: Register Step 3h seed orchestrate run
+        if: steps.hotfix_multi_seed.outputs.seed_orchestrate_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.hotfix_multi_seed.outputs.seed_orchestrate_run_id }}
+          expected-conclusion: success
+          reason: step3h-seed-orchestrate
+          upload: 'true'
+
+      - name: Register Step 3h hotfix dispatch (plan/apply) run
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.hotfix_await.outputs.dispatch_run_id }}
+          expected-conclusion: success
+          reason: step3h-hotfix-dispatch-plan-apply
+          upload: 'true'
+
+      - name: Register Step 3h finalize env/test run
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.hotfix_await.outputs.finalize_test_run_id }}
+          expected-conclusion: success
+          reason: step3h-finalize-env-test
+          upload: 'true'
+
+      - name: Register Step 3h finalize env/staging run
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.hotfix_await.outputs.finalize_staging_run_id }}
+          expected-conclusion: success
+          reason: step3h-finalize-env-staging
+          upload: 'true'
+
       - name: Step 4 - diverged staging is blocked from promoting to prod
+        id: step4
         run: |
           set -euo pipefail
           # Step 3h left staging diverged onto env/staging carrying two non-trunk
@@ -496,6 +632,10 @@ jobs:
             echo "::error::could not locate the dispatched staging-to-prod run"
             exit 1
           fi
+          # Surface the blocked run id so the following register-run step records
+          # it as a NEGATIVE (expected-conclusion: failure) in the reconcile
+          # ledger. Reuse the id already captured by the poll above.
+          echo "divergence_run_id=${run_id}" >> "${GITHUB_OUTPUT}"
           conclusion="$(gh run view "${run_id}" --json conclusion --jq '.conclusion // "none"')"
           assert_equal "diverged staging-to-prod blocked" "${conclusion}" "failure"
           # The preflight failure must be the divergence guard specifically. Grep
@@ -522,8 +662,10 @@ jobs:
           # keeps the downstream rollback steps meaningful (they need a published
           # prod with two distinct versions in its deploy-history ring).
           ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step4-clean-promote-run-id"
           gh workflow run promote.yaml -f mode=dev-to-prod -f dry_run=false
           clean="$(wait_for_dispatched_run promote.yaml "${ts}")"
+          echo "clean_promote_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "clean dev-to-prod promote conclusion" "${clean}" "success"
           # Poll trunk until the promote's state commit for prod lands.
           sync_env_state prod
@@ -537,7 +679,29 @@ jobs:
           summarize "4 diverged staging blocked" "PASS" \
             "staging->prod refused by divergence guard; prod published ${prod_ver} via dev-to-prod"
 
+      # NEGATIVE: the diverged staging-to-prod promote MUST conclude failure (the
+      # divergence guard refused it). Registered expected-conclusion: failure so
+      # reconcile treats it as accounted-for, and a run that wrongly SUCCEEDS (the
+      # guard regressed) reds the gate instead of passing as benign.
+      - name: Register Step 4 divergence-guard blocked run
+        if: steps.step4.outputs.divergence_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step4.outputs.divergence_run_id }}
+          expected-conclusion: failure
+          reason: step4-divergence-guard-blocked
+          upload: 'true'
+
+      - name: Register Step 4 clean dev-to-prod run
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step4.outputs.clean_promote_run_id }}
+          expected-conclusion: success
+          reason: step4-clean-dev-to-prod
+          upload: 'true'
+
       - name: Step 4b - second cascade publishes a newer prod version
+        id: step4b
         run: |
           set -euo pipefail
           # A rollback can only resolve a prior target once prod has carried two
@@ -551,12 +715,16 @@ jobs:
             src/release-marker.txt \
             "build stamp ${stamp}" \
             "feat: bump validation marker ${stamp}")"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step4b-seed-orchestrate-run-id"
           orchestrate="$(wait_for_orchestrate_sha "${merge_sha}")"
+          echo "seed_orchestrate_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           sync_env_state dev
           assert_equal "second orchestrate conclusion" "${orchestrate}" "success"
           ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step4b-cascade-run-id"
           gh workflow run promote.yaml -f mode=dev-to-prod -f dry_run=false
           conclusion="$(wait_for_dispatched_run promote.yaml "${ts}")"
+          echo "cascade_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "dev-to-prod cascade conclusion" "${conclusion}" "success"
           # The promote finalize pushes prod's state commit moments after the run
           # reports success; poll until prod's version moves off the prior value.
@@ -579,7 +747,25 @@ jobs:
           fi
           summarize "4b second cascade" "PASS" "prod advanced ${first_prod_ver} -> ${second_prod_ver}"
 
+      - name: Register Step 4b seed orchestrate run
+        if: steps.step4b.outputs.seed_orchestrate_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step4b.outputs.seed_orchestrate_run_id }}
+          expected-conclusion: success
+          reason: step4b-seed-orchestrate
+          upload: 'true'
+
+      - name: Register Step 4b dev-to-prod cascade run
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step4b.outputs.cascade_run_id }}
+          expected-conclusion: success
+          reason: step4b-cascade-dev-to-prod
+          upload: 'true'
+
       - name: Step 5 - rollback prod
+        id: step5
         run: |
           set -euo pipefail
           # prod now carries v0.2.0 with v0.1.0 retained in its deploy-history
@@ -600,8 +786,10 @@ jobs:
           # never reaches trunk; the workflow's finalize commits the rolled-back
           # state, which is what this suite reads back from origin/main.
           ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step5-rollback-run-id"
           gh workflow run cascade-rollback.yaml -f environment=prod -f dry_run=false
           conclusion="$(wait_for_dispatched_run cascade-rollback.yaml "${ts}")"
+          echo "rollback_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "rollback workflow conclusion" "${conclusion}" "success"
           # Rollback re-writes an env that already has a version, so poll until
           # prod's sha actually changes off its pre-rollback value rather than
@@ -623,7 +811,16 @@ jobs:
             "$(release_flag "${cur_ver}" isDraft)" "${cur_release_draft}"
           summarize "5 rollback prod" "PASS" "prod ${cur_ver} -> ${new_prod_ver}, diverged, releases untouched"
 
+      - name: Register Step 5 rollback prod run
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step5.outputs.rollback_run_id }}
+          expected-conclusion: success
+          reason: step5-rollback-prod
+          upload: 'true'
+
       - name: Step 5b - rollback aborts state write when the re-deploy fails
+        id: step5b
         run: |
           set -euo pipefail
           # Gap 1: a rollback whose re-deploy FAILS must leave trunk state exactly
@@ -637,8 +834,10 @@ jobs:
           prior_sha="$(state_sha prod)"
           gh variable set FORCE_DEPLOY_FAIL --body true --repo "${GITHUB_REPOSITORY}"
           ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step5b-rollback-run-id"
           gh workflow run cascade-rollback.yaml -f environment=prod -f dry_run=false
           conclusion="$(wait_for_dispatched_run cascade-rollback.yaml "${ts}")"
+          echo "rollback_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "rollback-on-failed-deploy conclusion" "${conclusion}" "failure"
           # Re-sync trunk and assert nothing moved: the finalize state write must
           # have been aborted, so version and sha hold their pre-dispatch values
@@ -661,7 +860,21 @@ jobs:
           gh variable set FORCE_DEPLOY_FAIL --body false --repo "${GITHUB_REPOSITORY}"
           summarize "5b cleanup" "PASS" "FORCE_DEPLOY_FAIL reset to false"
 
+      # NEGATIVE: the rollback whose re-deploy was forced to fail MUST conclude
+      # failure (finalize aborts the state write on a failed in-scope deploy).
+      # Registered expected-conclusion: failure so reconcile accounts for it and a
+      # run that wrongly SUCCEEDS reds the gate.
+      - name: Register Step 5b rollback failed-deploy run
+        if: steps.step5b.outputs.rollback_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step5b.outputs.rollback_run_id }}
+          expected-conclusion: failure
+          reason: step5b-rollback-failed-deploy
+          upload: 'true'
+
       - name: Step 5e - roll-forward rejoins the rolled-back prod env
+        id: step5e
         run: |
           set -euo pipefail
           # Gap 2: a forward promotion onto a rolled-back env ends the divergence.
@@ -673,8 +886,10 @@ jobs:
           assert_equal "prod diverged before rejoin" "$(state_ref prod)" "rollback/prod"
           rolledback_ver="$(state_version prod)"
           ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step5e-rollforward-run-id"
           gh workflow run promote.yaml -f mode=dev-to-prod -f dry_run=false
           conclusion="$(wait_for_dispatched_run promote.yaml "${ts}")"
+          echo "rollforward_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "roll-forward dev-to-prod conclusion" "${conclusion}" "success"
           # The promote finalize pushes prod's rejoin state commit moments after the
           # run reports success; poll until prod moves off the rolled-back version.
@@ -694,6 +909,14 @@ jobs:
           assert_equal "prod rejoin clears ref" "${after_ref}" ""
           assert_equal "prod rejoin clears base_sha" "${after_base_sha}" ""
           summarize "5e roll-forward rejoin" "PASS" "prod rejoined, ref and base_sha cleared"
+
+      - name: Register Step 5e roll-forward dev-to-prod run
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step5e.outputs.rollforward_run_id }}
+          expected-conclusion: success
+          reason: step5e-rollforward-rejoin
+          upload: 'true'
 
       - name: Step 5c - downgrade gate
         run: |
@@ -779,6 +1002,7 @@ jobs:
           summarize "5c downgrade gate" "PASS" "test ${high_ver}<-${low_ver} blocked by default, proceeds with --allow-downgrade"
 
       - name: Step 6 - dry-run promote dev to test
+        id: step6
         run: |
           set -euo pipefail
           # Ensure the baseline reflects the landed prod rollback state before
@@ -786,8 +1010,10 @@ jobs:
           sync_env_state prod
           before="$(full_snapshot)"
           ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step6-dryrun-run-id"
           gh workflow run promote.yaml -f mode=dev-to-test -f dry_run=true
           conclusion="$(wait_for_dispatched_run promote.yaml "${ts}")"
+          echo "dryrun_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "dry-run conclusion" "${conclusion}" "success"
           after="$(full_snapshot)"
           if [[ "${before}" == "${after}" ]]; then
@@ -799,7 +1025,16 @@ jobs:
             exit 1
           fi
 
+      - name: Register Step 6 dry-run promote run
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step6.outputs.dryrun_run_id }}
+          expected-conclusion: success
+          reason: step6-dryrun-promote
+          upload: 'true'
+
       - name: Step 7 - breaking change gate
+        id: step7
         env:
           GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
         run: |
@@ -812,7 +1047,9 @@ jobs:
             src/breaking-marker.txt \
             "breaking marker ${stamp}" \
             "feat!: rework validation marker ${stamp}")"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step7-seed-orchestrate-run-id"
           orchestrate="$(wait_for_orchestrate_sha "${merge_sha}")"
+          echo "seed_orchestrate_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           # Poll trunk until the re-seeded dev state commit lands so later reads
           # and the override promotion run against the current manifest.
           sync_env_state dev
@@ -825,8 +1062,10 @@ jobs:
           # commit in staging but not in prod and the gate has something to act
           # on. dev-to-staging never targets prod, so it proceeds.
           ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step7-carry-run-id"
           gh workflow run promote.yaml -f mode=dev-to-staging -f dry_run=false
           staged="$(wait_for_dispatched_run promote.yaml "${ts}")"
+          echo "carry_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "carry breaking change to staging" "${staged}" "success"
           sync_env_state staging
 
@@ -835,9 +1074,11 @@ jobs:
           # fails. prod stays at its rolled-back version (this leg writes no
           # state), so no sync is needed before the override leg.
           ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step7-gated-run-id"
           gh workflow run promote.yaml -f mode=staging-to-prod -f dry_run=false \
             -f allow_breaking_changes=false
           gated="$(wait_for_dispatched_run promote.yaml "${ts}")"
+          echo "gated_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           if [[ "${gated}" == "failure" ]]; then
             echo "  ok: promotion to prod blocked without allow_breaking_changes"
           else
@@ -848,11 +1089,51 @@ jobs:
           # Override leg: the same hop with allow_breaking_changes=true proceeds,
           # publishing the breaking version to prod and rejoining it onto trunk.
           ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step7-override-run-id"
           gh workflow run promote.yaml -f mode=staging-to-prod -f dry_run=false \
             -f allow_breaking_changes=true
           allowed="$(wait_for_dispatched_run promote.yaml "${ts}")"
+          echo "override_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "promotion proceeds with override" "${allowed}" "success"
           summarize "7 breaking gate" "PASS" "blocked targeting prod by default, proceeds with override"
+
+      - name: Register Step 7 seed orchestrate (breaking) run
+        if: steps.step7.outputs.seed_orchestrate_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step7.outputs.seed_orchestrate_run_id }}
+          expected-conclusion: success
+          reason: step7-seed-orchestrate-breaking
+          upload: 'true'
+
+      - name: Register Step 7 carry dev-to-staging run
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step7.outputs.carry_run_id }}
+          expected-conclusion: success
+          reason: step7-carry-dev-to-staging
+          upload: 'true'
+
+      # NEGATIVE: the gated staging-to-prod leg MUST conclude failure (the
+      # breaking-change gate refused it without an override). Registered
+      # expected-conclusion: failure so reconcile accounts for it and a run that
+      # wrongly SUCCEEDS reds the gate.
+      - name: Register Step 7 breaking gate blocked run
+        if: steps.step7.outputs.gated_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step7.outputs.gated_run_id }}
+          expected-conclusion: failure
+          reason: step7-breaking-gate-blocked
+          upload: 'true'
+
+      - name: Register Step 7 breaking override run
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step7.outputs.override_run_id }}
+          expected-conclusion: success
+          reason: step7-breaking-override
+          upload: 'true'
 
       - name: Step 8 - status verbs readback
         run: |
@@ -972,3 +1253,26 @@ jobs:
 
           grep -q "cascade --dry-run orchestrate setup" .github/workflows/cascade-merge-queue.yaml || { echo "::error::cascade --dry-run orchestrate setup not found in merge-queue yaml"; exit 1; }
           echo "PASS cascade --dry-run orchestrate setup present"
+
+  # ---------------------------------------------------------------------
+  # Reconcile gate: structural coverage backstop. The suite's own asserts above
+  # still gate each run they remember to wait on; this job is additive. It
+  # enumerates EVERY run this repo produced since window-start (captured before
+  # the first dispatch) and fails if any is unaccounted for in the ledger the
+  # register-run steps uploaded - an unregistered non-success run, or a
+  # registered run that concluded other than its expected conclusion. That turns
+  # any fire-and-forget run the suite forgot to gate (historically the
+  # pull_request Cascade Hotfix Finalize runs) into a hard red.
+  reconcile:
+    name: Reconcile scenario-window runs
+    needs: [scenario-suite]
+    if: always()
+    uses: stablekernel/cascade/.github/workflows/fleet-reconcile.yaml@main
+    permissions:
+      contents: read
+      actions: read
+    with:
+      window-start: ${{ needs.scenario-suite.outputs.window-start }}
+      # Artifact mode: each register-run step uploaded a per-job ledger under
+      # the default cascade-run-ledger-* name; reconcile globs and merges them.
+      cascade-ref: main
