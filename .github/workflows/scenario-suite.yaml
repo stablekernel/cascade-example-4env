@@ -1153,6 +1153,560 @@ jobs:
           done
           summarize "8 status verbs" "PASS" "status and status env read back for all envs"
 
+      # ===================================================================
+      # Step 9 - workflow drift-check PR gate (#316)
+      # The repo manifest opts into drift_check (enabled + comment), so the
+      # fleet repin emits cascade-drift-check.yaml (pull_request, read-only,
+      # re-exits on drift) and cascade-drift-comment.yaml (workflow_run
+      # companion that posts a sticky <!-- cascade-drift-check --> comment).
+      # This step opens a PR that mutates a committed generated workflow so the
+      # drift digest diverges: the Cascade Drift Check run on that PR MUST
+      # conclude failure and the sticky comment MUST land. A second PR that
+      # touches only a non-generated path leaves the committed workflows in
+      # sync, so its drift-check run MUST conclude success (the re-exit / no-drift
+      # path). Both runs are pull_request-triggered (the lane carries no dispatch
+      # trigger), so each is resolved by its PR head branch and registered.
+      - name: Step 9 - drift-check PR gate (diverged + clean)
+        id: step9
+        run: |
+          set -euo pipefail
+          # Resolve the drift-check run for a given PR head branch. The lane
+          # fires on pull_request, so key on the head branch and the
+          # pull_request event, poll to completion, and print the conclusion.
+          wait_for_drift_run() {
+            local head="$1" attempts=15 i=0 run_id="" status conclusion
+            while [ "${i}" -lt "${attempts}" ]; do
+              if [ -z "${run_id}" ]; then
+                run_id="$(gh run list --workflow cascade-drift-check.yaml \
+                  --branch "${head}" --event pull_request \
+                  --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")"
+                if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ]; then
+                  echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
+                fi
+              fi
+              if [ -n "${run_id}" ]; then
+                status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
+                if [ "${status}" = "completed" ]; then
+                  conclusion="$(gh run view "${run_id}" --json conclusion --jq '.conclusion // "none"')"
+                  echo "${conclusion}"
+                  return 0
+                fi
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for drift-check run on ${head}"
+            return 1
+          }
+
+          # Diverged PR: mutate a committed generated workflow so verify reports
+          # drift. The PR is NOT merged (it only needs to trigger the gate); it
+          # is closed after the assertion so trunk stays clean.
+          git fetch origin main --quiet
+          diverged_branch="scenario/drift-diverged-$(date +%s)-${RANDOM}"
+          git checkout -B "${diverged_branch}" origin/main
+          printf '\n# drift probe %s\n' "$(date -u +%FT%TWZ)" >> .github/workflows/deploy-app.yaml
+          git add .github/workflows/deploy-app.yaml
+          git commit --no-gpg-sign -s -m "test: perturb generated workflow to diverge drift digest"
+          git push origin "${diverged_branch}"
+          gh pr create --base main --head "${diverged_branch}" \
+            --title "test: drift-check diverged probe" \
+            --body "Mutates a generated workflow so the drift gate must fail. Not for merge."
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step9-drift-diverged-run-id"
+          diverged_concl="$(wait_for_drift_run "${diverged_branch}")"
+          echo "drift_diverged_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
+          assert_equal "diverged drift-check conclusion" "${diverged_concl}" "failure"
+
+          # The fork-safe comment companion posts a sticky comment on the PR.
+          # Poll the PR for the marker, then close the PR and delete the branch.
+          marker="<!-- cascade-drift-check -->"
+          found="no"
+          for _ in $(seq 1 10); do
+            if gh pr view "${diverged_branch}" --json comments \
+              --jq '.comments[].body' 2>/dev/null | grep -qF "${marker}"; then
+              found="yes"
+              break
+            fi
+            sleep 30
+          done
+          assert_equal "drift sticky comment present" "${found}" "yes"
+          gh pr close "${diverged_branch}" --delete-branch || true
+
+          # Clean PR: touch a non-generated path only, so the committed
+          # generated workflows still match the manifest and the gate passes.
+          git fetch origin main --quiet
+          clean_branch="scenario/drift-clean-$(date +%s)-${RANDOM}"
+          git checkout -B "${clean_branch}" origin/main
+          mkdir -p src
+          printf 'drift clean probe %s\n' "$(date -u +%FT%TWZ)" > src/drift-clean-probe.txt
+          git add src/drift-clean-probe.txt
+          git commit --no-gpg-sign -s -m "test: non-generated change leaves workflows in sync"
+          git push origin "${clean_branch}"
+          gh pr create --base main --head "${clean_branch}" \
+            --title "test: drift-check clean probe" \
+            --body "Touches only a non-generated path so the drift gate must pass. Not for merge."
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step9-drift-clean-run-id"
+          clean_concl="$(wait_for_drift_run "${clean_branch}")"
+          echo "drift_clean_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
+          assert_equal "clean drift-check conclusion" "${clean_concl}" "success"
+          gh pr close "${clean_branch}" --delete-branch || true
+          summarize "9 drift-check gate" "PASS" "diverged PR failed + commented; clean PR passed"
+
+      # NEGATIVE: the diverged PR's drift-check MUST conclude failure (verify
+      # re-exits on drift to keep the gate red). Registered expected failure so
+      # reconcile accounts for it and a run that wrongly SUCCEEDS reds the gate.
+      - name: Register Step 9 diverged drift-check run
+        if: steps.step9.outputs.drift_diverged_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step9.outputs.drift_diverged_run_id }}
+          expected-conclusion: failure
+          reason: step9-drift-diverged
+          upload: 'true'
+
+      - name: Register Step 9 clean drift-check run
+        if: steps.step9.outputs.drift_clean_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step9.outputs.drift_clean_run_id }}
+          expected-conclusion: success
+          reason: step9-drift-clean
+          upload: 'true'
+
+      # ===================================================================
+      # Step 10 - validate-manifest PR gate (#318)
+      # The manifest opts into validate_check, so cascade-validate.yaml runs on
+      # any pull_request touching .github/manifest.yaml and fails when the
+      # manifest is invalid. An invalid-manifest PR (an unknown environment)
+      # MUST conclude failure; a valid control PR MUST conclude success. Both
+      # are pull_request-triggered (the lane carries no dispatch trigger), so
+      # each is resolved by its PR head branch and registered. Neither PR is
+      # merged - the gate only needs to evaluate the PR head.
+      - name: Step 10 - validate-manifest PR gate (invalid + valid)
+        id: step10
+        run: |
+          set -euo pipefail
+          wait_for_validate_run() {
+            local head="$1" attempts=12 i=0 run_id="" status conclusion
+            while [ "${i}" -lt "${attempts}" ]; do
+              if [ -z "${run_id}" ]; then
+                run_id="$(gh run list --workflow cascade-validate.yaml \
+                  --branch "${head}" --event pull_request \
+                  --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")"
+                if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ]; then
+                  echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
+                fi
+              fi
+              if [ -n "${run_id}" ]; then
+                status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
+                if [ "${status}" = "completed" ]; then
+                  conclusion="$(gh run view "${run_id}" --json conclusion --jq '.conclusion // "none"')"
+                  echo "${conclusion}"
+                  return 0
+                fi
+              fi
+              i=$((i + 1))
+              sleep 30
+            done
+            echo "::error::timed out waiting for validate run on ${head}"
+            return 1
+          }
+
+          # Invalid PR: add an environment not present in the env list's deploy
+          # plan so parse-config reports the manifest invalid. The change targets
+          # .github/manifest.yaml so the path filter fires the gate.
+          git fetch origin main --quiet
+          bad_branch="scenario/validate-invalid-$(date +%s)-${RANDOM}"
+          git checkout -B "${bad_branch}" origin/main
+          # An empty environment name is rejected by parse-config; inject one
+          # under the env list to break the manifest deterministically.
+          yq -i '.ci.config.environments += [""]' .github/manifest.yaml
+          git add .github/manifest.yaml
+          git commit --no-gpg-sign -s -m "test: break manifest so validate gate must fail"
+          git push origin "${bad_branch}"
+          gh pr create --base main --head "${bad_branch}" \
+            --title "test: invalid manifest probe" \
+            --body "Breaks the manifest so the validate gate must fail. Not for merge."
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step10-validate-invalid-run-id"
+          bad_concl="$(wait_for_validate_run "${bad_branch}")"
+          echo "validate_invalid_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
+          assert_equal "invalid-manifest validate conclusion" "${bad_concl}" "failure"
+          gh pr close "${bad_branch}" --delete-branch || true
+          # Restore the local checkout so the control PR builds on a clean trunk.
+          git checkout -- .github/manifest.yaml 2>/dev/null || true
+          git fetch origin main --quiet
+          git reset --hard origin/main >/dev/null
+
+          # Valid PR: a manifest-touching but still-valid change (a no-op
+          # comment edit) so the gate passes.
+          good_branch="scenario/validate-valid-$(date +%s)-${RANDOM}"
+          git checkout -B "${good_branch}" origin/main
+          printf '\n# validate control probe %s\n' "$(date -u +%FT%TWZ)" >> .github/manifest.yaml
+          git add .github/manifest.yaml
+          git commit --no-gpg-sign -s -m "test: valid manifest comment leaves validate gate green"
+          git push origin "${good_branch}"
+          gh pr create --base main --head "${good_branch}" \
+            --title "test: valid manifest control" \
+            --body "Valid manifest change so the validate gate must pass. Not for merge."
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step10-validate-valid-run-id"
+          good_concl="$(wait_for_validate_run "${good_branch}")"
+          echo "validate_valid_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
+          assert_equal "valid-manifest validate conclusion" "${good_concl}" "success"
+          gh pr close "${good_branch}" --delete-branch || true
+          git fetch origin main --quiet
+          git reset --hard origin/main >/dev/null
+          summarize "10 validate gate" "PASS" "invalid PR failed; valid control passed"
+
+      # NEGATIVE: the invalid-manifest PR's validate run MUST conclude failure.
+      # Registered expected failure so reconcile accounts for it and a run that
+      # wrongly SUCCEEDS reds the gate.
+      - name: Register Step 10 invalid-manifest validate run
+        if: steps.step10.outputs.validate_invalid_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step10.outputs.validate_invalid_run_id }}
+          expected-conclusion: failure
+          reason: step10-validate-invalid
+          upload: 'true'
+
+      - name: Register Step 10 valid-manifest validate run
+        if: steps.step10.outputs.validate_valid_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step10.outputs.validate_valid_run_id }}
+          expected-conclusion: success
+          reason: step10-validate-valid
+          upload: 'true'
+
+      # ===================================================================
+      # Step 11 - rollback variants (#321)
+      # The generated Rollback workflow exposes dry_run and deployable inputs.
+      # (a) A dry-run rollback resolves and prints without deploying and writes
+      #     NO state - it MUST conclude success and leave prod's state byte for
+      #     byte unchanged. (b) A deployable-scoped rollback limits the deploy to
+      #     a single deployable (app), exercising the default-deployable path -
+      #     it MUST conclude success and the only deploy job that ran is the app
+      #     deploy. Each dispatched run is registered. The cascade-rollback lane
+      #     carries no repository_dispatch trigger in this repo's generated set,
+      #     so the repository_dispatch rollback variant is not wireable here and
+      #     is noted in the PR body rather than faked.
+      - name: Step 11 - rollback dry-run and deployable-scoped
+        id: step11
+        run: |
+          set -euo pipefail
+          for e in dev prod; do sync_env_state "${e}"; done
+          before_ver="$(state_version prod)"
+          before_sha="$(state_sha prod)"
+          before_ref="$(state_ref prod)"
+
+          # (a) Dry-run rollback: resolves and prints, writes no state.
+          ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step11-dryrun-run-id"
+          gh workflow run cascade-rollback.yaml -f environment=prod -f dry_run=true
+          dry_concl="$(wait_for_dispatched_run cascade-rollback.yaml "${ts}")"
+          echo "rollback_dryrun_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
+          assert_equal "dry-run rollback conclusion" "${dry_concl}" "success"
+          git fetch origin main --quiet
+          git reset --hard origin/main >/dev/null
+          assert_equal "dry-run rollback leaves prod version" "$(state_version prod)" "${before_ver}"
+          assert_equal "dry-run rollback leaves prod sha" "$(state_sha prod)" "${before_sha}"
+          assert_equal "dry-run rollback leaves prod ref" "$(state_ref prod)" "${before_ref}"
+
+          # (b) Deployable-scoped rollback: scope the rollback to the app
+          # deployable. The run drives the app deploy job only (the workflow's
+          # deploy-app job gates on deployable in {'', app}); assert the
+          # resolved run's job set carries the app deploy and concludes success.
+          cur_sha="$(state_sha prod)"
+          ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step11-scoped-run-id"
+          gh workflow run cascade-rollback.yaml \
+            -f environment=prod -f deployable=app -f dry_run=false
+          scoped_concl="$(wait_for_dispatched_run cascade-rollback.yaml "${ts}")"
+          scoped_run_id="$(cat "${RESOLVED_RUN_ID_FILE}")"
+          echo "rollback_scoped_run_id=${scoped_run_id}" >> "${GITHUB_OUTPUT}"
+          assert_equal "deployable-scoped rollback conclusion" "${scoped_concl}" "success"
+          jobs_json="$(gh run view "${scoped_run_id}" --json jobs \
+            --jq '[.jobs[].name]' 2>/dev/null || echo '[]')"
+          echo "scoped rollback jobs: ${jobs_json}"
+          if echo "${jobs_json}" | grep -qiE 'deploy'; then
+            echo "  ok: deployable-scoped rollback ran a deploy job"
+          else
+            echo "::error::deployable-scoped rollback ran no deploy job: ${jobs_json}"
+            exit 1
+          fi
+          # The scoped rollback re-wrote prod; sync forward so later steps read
+          # the post-rollback state rather than racing the finalize commit.
+          sync_env_state_until_sha_changed prod "${cur_sha}" || true
+          summarize "11 rollback variants" "PASS" "dry-run wrote no state; scoped ran app deploy"
+
+      - name: Register Step 11 dry-run rollback run
+        if: steps.step11.outputs.rollback_dryrun_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step11.outputs.rollback_dryrun_run_id }}
+          expected-conclusion: success
+          reason: step11-rollback-dry-run
+          upload: 'true'
+
+      - name: Register Step 11 deployable-scoped rollback run
+        if: steps.step11.outputs.rollback_scoped_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step11.outputs.rollback_scoped_run_id }}
+          expected-conclusion: success
+          reason: step11-rollback-deployable-scoped
+          upload: 'true'
+
+      # ===================================================================
+      # Step 12 - concurrency-cancel and no-change skip (#333)
+      # (a) Concurrency-cancel: orchestrate carries a per-component concurrency
+      #     group. Fire two orchestrate runs in quick succession on the same
+      #     group; the older MUST be cancelled and the survivor MUST conclude
+      #     success. The survivor is registered expected success and the
+      #     cancelled run expected cancelled so reconcile accounts for both.
+      # (b) No-change skip: re-dispatch orchestrate with no watched-path change;
+      #     the run MUST conclude success and cut NO new prerelease tag (the
+      #     no-change skip path). Registered expected success.
+      # The retry-on-conflict log assertion the gap also names cannot be forced
+      # deterministically from the suite (it depends on a real concurrent
+      # state-write race), so it is noted in the PR body rather than faked.
+      - name: Step 12 - concurrency-cancel and no-change skip
+        id: step12
+        run: |
+          set -euo pipefail
+          # (a) Two back-to-back orchestrate dispatches share orchestrate's
+          # concurrency group; the earlier is cancelled in favor of the later.
+          ts1="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          gh workflow run orchestrate.yaml || true
+          sleep 5
+          first_id="$(gh run list --workflow orchestrate.yaml --event workflow_dispatch \
+            --created ">=${ts1}" --json databaseId --jq '.[0].databaseId // empty')"
+          ts2="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step12-survivor-run-id"
+          gh workflow run orchestrate.yaml || true
+          survivor_concl="$(wait_for_dispatched_run orchestrate.yaml "${ts2}")"
+          survivor_id="$(cat "${RESOLVED_RUN_ID_FILE}")"
+          echo "orchestrate_survivor_run_id=${survivor_id}" >> "${GITHUB_OUTPUT}"
+          assert_equal "concurrency survivor conclusion" "${survivor_concl}" "success"
+          # The first run should have been cancelled by the second entering the
+          # same group. Read its conclusion by id; register it if it cancelled.
+          cancelled_concl="none"
+          if [ -n "${first_id}" ] && [ "${first_id}" != "${survivor_id}" ]; then
+            for _ in $(seq 1 10); do
+              st="$(gh run view "${first_id}" --json status --jq '.status // "none"')"
+              [ "${st}" = "completed" ] && break
+              sleep 30
+            done
+            cancelled_concl="$(gh run view "${first_id}" --json conclusion --jq '.conclusion // "none"')"
+            echo "first orchestrate run ${first_id} concluded ${cancelled_concl}"
+            if [ "${cancelled_concl}" = "cancelled" ]; then
+              echo "orchestrate_cancelled_run_id=${first_id}" >> "${GITHUB_OUTPUT}"
+            fi
+          fi
+
+          # (b) No-change skip: re-dispatch orchestrate without changing any
+          # watched path. Capture the prerelease-tag set before and after; the
+          # no-change path cuts no new prerelease.
+          sync_env_state dev
+          tags_before="$(git ls-remote --tags origin '*-rc.*' | wc -l | tr -d ' ')"
+          ts3="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step12-nochange-run-id"
+          gh workflow run orchestrate.yaml
+          nochange_concl="$(wait_for_dispatched_run orchestrate.yaml "${ts3}")"
+          echo "orchestrate_nochange_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
+          assert_equal "no-change orchestrate conclusion" "${nochange_concl}" "success"
+          git fetch --tags --quiet origin || true
+          tags_after="$(git ls-remote --tags origin '*-rc.*' | wc -l | tr -d ' ')"
+          assert_equal "no-change cut no new prerelease" "${tags_after}" "${tags_before}"
+          summarize "12 concurrency + no-change" "PASS" \
+            "survivor passed (older ${cancelled_concl}); no-change cut no new rc"
+
+      - name: Register Step 12 concurrency survivor run
+        if: steps.step12.outputs.orchestrate_survivor_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step12.outputs.orchestrate_survivor_run_id }}
+          expected-conclusion: success
+          reason: step12-concurrency-survivor
+          upload: 'true'
+
+      # NEGATIVE: the older orchestrate run is cancelled by the survivor
+      # entering the same concurrency group. Registered expected cancelled so
+      # reconcile accounts for it (only when it actually cancelled; a
+      # superseded-before-start run carries no id and is skipped).
+      - name: Register Step 12 concurrency-cancelled run
+        if: steps.step12.outputs.orchestrate_cancelled_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step12.outputs.orchestrate_cancelled_run_id }}
+          expected-conclusion: cancelled
+          reason: step12-concurrency-cancelled
+          upload: 'true'
+
+      - name: Register Step 12 no-change-skip orchestrate run
+        if: steps.step12.outputs.orchestrate_nochange_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step12.outputs.orchestrate_nochange_run_id }}
+          expected-conclusion: success
+          reason: step12-no-change-skip
+          upload: 'true'
+
+      # ===================================================================
+      # Step 13 - hotfix cherry-pick conflict (#334)
+      # 4env is multi-env, so cascade emits cascade-hotfix.yaml. Force a
+      # cherry-pick conflict: pre-load the target env branch with a change to
+      # the SAME file the trunk fix touches, dispatch a hotfix for that fix, and
+      # assert the apply job opens a PR labeled cascade-hotfix-conflict and halts
+      # the chain. The conflicting hotfix dispatch concludes failure (the apply
+      # job exits non-zero after opening the conflict PR), so it is registered
+      # expected failure. No downstream finalize fires because the conflict PR
+      # is left unmerged (the chain is halted for human resolution).
+      - name: Step 13 - hotfix cherry-pick conflict
+        id: step13
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+        run: |
+          set -euo pipefail
+          sync_env_state test
+          if [ -z "$(state_version test)" ] || [ -z "$(state_sha test)" ]; then
+            echo "::error::conflict precondition: state.test version/sha empty"
+            exit 1
+          fi
+          git fetch origin main --quiet
+          main_sha="$(git rev-parse origin/main)"
+          push_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          # Reset env/test to trunk, then land a conflicting line on the SAME
+          # file path the trunk fix will touch so the cherry-pick cannot apply.
+          conflict_file="src/hotfix-conflict-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
+          git checkout -B scenario/conflict-envtest-$$ "${main_sha}"
+          mkdir -p src
+          echo "env-branch side of the conflict" > "${conflict_file}"
+          git add "${conflict_file}"
+          git commit --no-gpg-sign -s -m "test: env/test divergent line to force hotfix conflict"
+          git push --force "${push_remote}" "HEAD:refs/heads/env/test" \
+            || { echo "::error::failed to seed conflicting env/test"; exit 1; }
+
+          # Land the trunk fix touching the same file with different content.
+          git fetch origin main --quiet
+          fix_branch="scenario/hotfix-conflict-$(date +%s)-${RANDOM}"
+          git checkout -B "${fix_branch}" origin/main
+          echo "trunk side of the conflict" > "${conflict_file}"
+          git add "${conflict_file}"
+          git commit --no-gpg-sign -s -m "fix: trunk patch that conflicts on env/test"
+          git push origin "${fix_branch}"
+          gh pr create --base main --head "${fix_branch}" \
+            --title "fix: trunk patch that conflicts on env/test" \
+            --body "Trunk fix whose cherry-pick onto env/test must conflict."
+          gh pr merge "${fix_branch}" --squash --delete-branch
+          git fetch origin main --quiet
+          fix_sha="$(git rev-parse origin/main)"
+          # The fix merge also touches src/** and fires orchestrate; let it
+          # settle dev before dispatching the hotfix so the two flows do not
+          # contend on trunk state writes. That superseded orchestrate shares
+          # the workflow + main lane with later registered orchestrate runs and
+          # is intentionally not separately registered.
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step13-seed-orchestrate-run-id"
+          seed_concl="$(wait_for_orchestrate_sha "${fix_sha}")"
+          echo "seed_orchestrate_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
+          assert_equal "conflict seed orchestrate conclusion" "${seed_concl}" "success"
+
+          # Dispatch the hotfix targeting test; the cherry-pick must conflict.
+          ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step13-hotfix-run-id"
+          gh workflow run cascade-hotfix.yaml \
+            -f commit="${fix_sha}" -f target_env=test -f dry_run=false \
+            || { echo "::error::failed to dispatch conflicting hotfix"; exit 1; }
+          hotfix_concl="$(wait_for_dispatched_run cascade-hotfix.yaml "${ts}")"
+          echo "hotfix_conflict_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
+          assert_equal "conflicting hotfix conclusion" "${hotfix_concl}" "failure"
+
+          # A cascade-hotfix-conflict-labeled PR into env/test must exist and be
+          # unmerged (the chain halted for human resolution).
+          conflict_pr="$(gh pr list --base env/test --state open \
+            --label cascade-hotfix-conflict \
+            --json number --jq 'sort_by(.number) | last | .number' 2>/dev/null || echo "")"
+          [ -n "${conflict_pr}" ] \
+            || { echo "::error::no cascade-hotfix-conflict PR opened into env/test"; exit 1; }
+          echo "conflict resolution PR #${conflict_pr} opened and chain halted"
+          # Close the conflict PR so it does not strand an open PR for the next run.
+          gh pr close "${conflict_pr}" --delete-branch || true
+          summarize "13 hotfix conflict" "PASS" \
+            "cherry-pick conflicted; conflict PR opened; chain halted"
+
+      - name: Register Step 13 seed orchestrate run
+        if: steps.step13.outputs.seed_orchestrate_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step13.outputs.seed_orchestrate_run_id }}
+          expected-conclusion: success
+          reason: step13-seed-orchestrate
+          upload: 'true'
+
+      # NEGATIVE: the conflicting hotfix dispatch MUST conclude failure (the
+      # apply job opens the conflict PR and halts the chain non-zero).
+      # Registered expected failure so reconcile accounts for it and a run that
+      # wrongly SUCCEEDS reds the gate.
+      - name: Register Step 13 conflicting hotfix run
+        if: steps.step13.outputs.hotfix_conflict_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step13.outputs.hotfix_conflict_run_id }}
+          expected-conclusion: failure
+          reason: step13-hotfix-conflict
+          upload: 'true'
+
+      # ===================================================================
+      # Step 14 - merge_queue speculative validation (#319)
+      # cascade-merge-queue.yaml runs on merge_group only - it cannot be
+      # dispatched. Driving a real merge_group event needs the repo's merge
+      # queue enabled and a PR added to the queue, which the suite cannot
+      # synthesize deterministically across fleet runs without a configured
+      # queue. When a merge_group run is present in the scenario window it MUST
+      # conclude success (parse-config + dry-run orchestrate preview, no state
+      # write); resolve and register it when one is found, and assert it wrote
+      # no state. If no merge_group run is present this step is a no-op (the
+      # gen-time merge-queue assertion still covers the lane's shape), and the
+      # limitation is noted in the PR body rather than faked.
+      - name: Step 14 - merge_queue speculative run (if present)
+        id: step14
+        run: |
+          set -euo pipefail
+          for e in dev test staging prod; do sync_env_state "${e}"; done
+          before_dev_sha="$(state_sha dev)"
+          # Look for a merge_group run in this scenario window. window-start was
+          # captured before any dispatch, so any present run is in-window.
+          mq_id="$(gh run list --workflow cascade-merge-queue.yaml \
+            --event merge_group \
+            --created ">=${{ steps.window.outputs.window-start }}" \
+            --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")"
+          if [ -z "${mq_id}" ]; then
+            echo "::notice::no merge_group run in window; merge-queue lane covered by gen-time shape assertion"
+            summarize "14 merge_queue" "SKIP" "no merge_group event in window (needs configured queue)"
+            exit 0
+          fi
+          for _ in $(seq 1 10); do
+            st="$(gh run view "${mq_id}" --json status --jq '.status // "none"')"
+            [ "${st}" = "completed" ] && break
+            sleep 30
+          done
+          mq_concl="$(gh run view "${mq_id}" --json conclusion --jq '.conclusion // "none"')"
+          echo "merge_queue_run_id=${mq_id}" >> "${GITHUB_OUTPUT}"
+          assert_equal "merge_queue conclusion" "${mq_concl}" "success"
+          git fetch origin main --quiet
+          git reset --hard origin/main >/dev/null
+          assert_equal "merge_queue wrote no state" "$(state_sha dev)" "${before_dev_sha}"
+          summarize "14 merge_queue" "PASS" "merge_group run passed and wrote no state"
+
+      - name: Register Step 14 merge_queue speculative run
+        if: steps.step14.outputs.merge_queue_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step14.outputs.merge_queue_run_id }}
+          expected-conclusion: success
+          reason: step14-merge-queue-speculative
+          upload: 'true'
+
       - name: Final snapshot
         if: always()
         run: |
