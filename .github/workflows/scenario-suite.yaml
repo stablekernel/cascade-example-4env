@@ -29,20 +29,11 @@ env:
   RC_RE: '\-rc\.[0-9]+'
 
 jobs:
-  scenario-suite:
+  open-window:
+    name: Open reconcile window
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    env:
-      GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
-      GITHUB_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
-      # Source for the revalidation request, taken from the event payload via env
-      # to avoid injecting payload text into shell scripts.
-      REVALIDATE_SOURCE: ${{ github.event.client_payload.source }}
+    timeout-minutes: 5
     outputs:
-      # Captured before anything is dispatched. The reconcile job enumerates
-      # every run this repo produced at or after this instant and fails if any
-      # is unaccounted for in the ledger. Recorded first so no run the suite
-      # causes can fall outside the window.
       window-start: ${{ steps.window.outputs.window-start }}
     steps:
       # The reconcile window opens here, before the first dispatch or merge.
@@ -56,6 +47,19 @@ jobs:
           echo "window-start=$WINDOW_START" >> "$GITHUB_OUTPUT"
           echo "reconcile window opened at $WINDOW_START"
 
+
+  lifecycle:
+    name: Release lifecycle dev to prod
+    needs: [open-window]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+      # Source for the revalidation request, taken from the event payload via
+      # env to avoid injecting payload text into shell scripts.
+      REVALIDATE_SOURCE: ${{ github.event.client_payload.source }}
+    steps:
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
         with:
@@ -276,6 +280,7 @@ jobs:
             echo "| step | result | detail |"
             echo "| --- | --- | --- |"
           } >> "${GITHUB_STEP_SUMMARY}"
+
 
       - name: Verify manifest parses
         run: |
@@ -1153,6 +1158,255 @@ jobs:
           done
           summarize "8 status verbs" "PASS" "status and status env read back for all envs"
 
+
+      - name: Final snapshot
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo ""
+            echo "### final state snapshot"
+            echo ""
+            echo '```'
+            full_snapshot || echo "snapshot unavailable"
+            echo '```'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+
+  probe_drift:
+    name: Probe drift-check PR gate
+    needs: [open-window]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+      # Source for the revalidation request, taken from the event payload via
+      # env to avoid injecting payload text into shell scripts.
+      REVALIDATE_SOURCE: ${{ github.event.client_payload.source }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.CASCADE_STATE_TOKEN }}
+
+      - name: Setup CLI
+        uses: stablekernel/cascade/.github/actions/setup-cli@v0.4.1
+        with:
+          version: v0.4.1
+
+      - name: Configure git identity
+        run: |
+          set -euo pipefail
+          git config user.name "cascade-validation"
+          git config user.email "cascade-validation@users.noreply.github.com"
+          if [ -n "${REVALIDATE_SOURCE:-}" ]; then
+            echo "Revalidation requested by: ${REVALIDATE_SOURCE}"
+          fi
+
+      # Shared helpers used by every assertion step. Sourced from $BASH_ENV so the
+      # functions are available in later run blocks without re-declaring them.
+      - name: Install assertion helpers
+        run: |
+          set -euo pipefail
+          helpers="${RUNNER_TEMP}/helpers.sh"
+          cat > "${helpers}" <<'HELPERS'
+          # Read a state sub-key for an env from the manifest via the CLI.
+          state_sha() {
+            cascade status env "$1" --json | jq -r '.state.sha // empty'
+          }
+          state_version() {
+            cascade status env "$1" --json | jq -r '.state.version // empty'
+          }
+          # Assert a value matches a regex, failing the step on mismatch.
+          assert_match() {
+            local label="$1" value="$2" pattern="$3"
+            if [[ "${value}" =~ ${pattern} ]]; then
+              echo "  ok: ${label} (${value}) matches ${pattern}"
+            else
+              echo "::error::${label} value '${value}' does not match ${pattern}"
+              return 1
+            fi
+          }
+          assert_equal() {
+            local label="$1" got="$2" want="$3"
+            if [[ "${got}" == "${want}" ]]; then
+              echo "  ok: ${label} == ${want}"
+            else
+              echo "::error::${label} expected '${want}' got '${got}'"
+              return 1
+            fi
+          }
+          # Look up a release by tag and print its draft/prerelease/latest flags.
+          release_flag() {
+            gh release view "$1" --json "$2" --jq ".$2" 2>/dev/null || echo "missing"
+          }
+          # Snapshot all four env states plus tags and releases into one string so
+          # dry-run steps can compare before and after.
+          full_snapshot() {
+            for e in dev test staging prod; do
+              printf 'env:%s sha:%s ver:%s\n' "${e}" "$(state_sha "${e}")" "$(state_version "${e}")"
+            done
+            echo "tags:"
+            git tag --sort=-creatordate
+            echo "releases:"
+            gh release list --json tagName,isDraft,isPrerelease,isLatest \
+              --jq '.[] | "\(.tagName) draft=\(.isDraft) pre=\(.isPrerelease) latest=\(.isLatest)"' \
+              | sort
+          }
+          # Bounded wait for a workflow_dispatch run that THIS suite triggered.
+          # workflow_dispatch carries no merge commit to key on, so callers
+          # capture a UTC timestamp immediately before `gh workflow run` and
+          # pass it here. The run created at/after that timestamp is the one we
+          # fired; we capture its databaseId and poll THAT exact run to
+          # completion rather than grabbing the global newest run, which a
+          # stale or concurrent dispatch could otherwise win. Prints the run
+          # conclusion on success.
+          wait_for_dispatched_run() {
+            local wf="$1" since="$2" attempts=15 i=0 run_id="" status conclusion
+            while [ "${i}" -lt "${attempts}" ]; do
+              if [ -z "${run_id}" ]; then
+                run_id="$(gh run list --workflow "${wf}" --created ">=${since}" \
+                  --json databaseId,headBranch,status \
+                  --jq '.[0].databaseId // empty')"
+                # Expose the resolved run id to the caller (write once) so the
+                # following register-run step can record it in the reconcile
+                # ledger. Side channel only; stdout still carries the conclusion.
+                if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ]; then
+                  echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
+                fi
+              fi
+              if [ -n "${run_id}" ]; then
+                status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
+                if [ "${status}" = "completed" ]; then
+                  conclusion="$(gh run view "${run_id}" \
+                    --json conclusion --jq '.conclusion // "none"')"
+                  echo "${conclusion}"
+                  return 0
+                fi
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for dispatched ${wf} run since ${since}"
+            return 1
+          }
+          # Wait for the orchestrate run fired by a specific merge commit on main,
+          # keyed on headSha so a stale or concurrent run is never mistaken for
+          # this one. Prints the run conclusion on success.
+          wait_for_orchestrate_sha() {
+            local merge_sha="$1" attempts=15 i=0 run_id="" status conclusion
+            while [ "${i}" -lt "${attempts}" ]; do
+              run_id="$(gh run list --workflow orchestrate.yaml --branch main \
+                --json databaseId,headSha,status \
+                --jq ".[] | select(.headSha==\"${merge_sha}\") | .databaseId" \
+                | head -n1)"
+              # Expose the resolved orchestrate run id to the caller (write once)
+              # so the following register-run step can record it in the reconcile
+              # ledger. Side channel only; stdout still carries the conclusion.
+              if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ] \
+                && [ ! -s "${RESOLVED_RUN_ID_FILE}" ]; then
+                echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
+              fi
+              if [ -n "${run_id}" ]; then
+                status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
+                if [ "${status}" = "completed" ]; then
+                  conclusion="$(gh run view "${run_id}" \
+                    --json conclusion --jq '.conclusion // "none"')"
+                  echo "${conclusion}"
+                  return 0
+                fi
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for orchestrate run for ${merge_sha}"
+            return 1
+          }
+          # Land a src/** change on main through a PAT-authored branch -> PR ->
+          # squash-merge, emulating a real contributor. The PR title carries the
+          # conventional type (squash collapses the branch to one commit whose
+          # subject is the PR title). Prints the merge commit SHA on origin/main.
+          seed_via_pr() {
+            local file="$1" content="$2" title="$3" branch sha
+            branch="scenario/src-$(date +%s)-${RANDOM}"
+            # Route all command chatter to stderr so the function's stdout is
+            # ONLY the merge SHA (callers capture it via command substitution).
+            {
+              git fetch origin main --quiet
+              git checkout -B "${branch}" origin/main
+              mkdir -p src
+              printf '%s\n' "${content}" > "${file}"
+              git add "${file}"
+              git commit --no-gpg-sign -s -m "${title}"
+              git push origin "${branch}"
+              gh pr create --base main --head "${branch}" \
+                --title "${title}" \
+                --body "Automated scenario run; drives orchestrate on merge."
+              gh pr merge "${branch}" --squash --delete-branch
+              git fetch origin main --quiet
+            } >&2
+            sha="$(git rev-parse origin/main)"
+            printf '%s\n' "${sha}"
+          }
+          # Refresh local trunk and poll until the named env carries a version.
+          # cascade's finalize job pushes the "update state" commit to main a
+          # few seconds after the orchestrate/promote run reports success, so a
+          # single fetch+reset can read the pre-state-commit manifest. Re-fetch
+          # trunk and re-read until the env is populated (up to ~60s).
+          sync_env_state() {
+            local env="$1" i=0
+            while [ "${i}" -lt 2 ]; do
+              git fetch origin main --quiet
+              git reset --hard origin/main >/dev/null
+              if [ -n "$(state_version "${env}")" ]; then
+                return 0
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for ${env} state to land on trunk"
+            return 1
+          }
+          # Like sync_env_state, but poll until the env's sha differs from a
+          # known prior value. A rollback re-writes an env that ALREADY carries
+          # a version, so a plain non-empty poll returns the stale pre-rollback
+          # state immediately. Pass the pre-rollback sha and wait for the
+          # finalize state commit that actually changes it.
+          sync_env_state_until_sha_changed() {
+            local env="$1" prior_sha="$2" i=0
+            while [ "${i}" -lt 2 ]; do
+              git fetch origin main --quiet
+              git reset --hard origin/main >/dev/null
+              if [ -n "$(state_sha "${env}")" ] && [ "$(state_sha "${env}")" != "${prior_sha}" ]; then
+                return 0
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for ${env} sha to change from ${prior_sha} on trunk"
+            return 1
+          }
+          # Read the divergence ref an env carries (set to rollback/<env> after a
+          # manual rollback, empty on the linear promotion line).
+          state_ref() {
+            cascade status env "$1" --json | jq -r '.state.ref // empty'
+          }
+          # Append a PASS/FAIL row to the job summary table.
+          summarize() {
+            printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${GITHUB_STEP_SUMMARY}"
+          }
+          HELPERS
+          echo "BASH_ENV=${helpers}" >> "${GITHUB_ENV}"
+          {
+            echo "## scenario-suite results"
+            echo ""
+            echo "| step | result | detail |"
+            echo "| --- | --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+
       # ===================================================================
       # Step 9 - workflow drift-check PR gate (#316)
       # The repo manifest opts into drift_check (enabled + comment), so the
@@ -1273,6 +1527,241 @@ jobs:
           reason: step9-drift-clean
           upload: 'true'
 
+
+  probe_validate:
+    name: Probe validate-manifest PR gate
+    needs: [open-window]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+      # Source for the revalidation request, taken from the event payload via
+      # env to avoid injecting payload text into shell scripts.
+      REVALIDATE_SOURCE: ${{ github.event.client_payload.source }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.CASCADE_STATE_TOKEN }}
+
+      - name: Setup CLI
+        uses: stablekernel/cascade/.github/actions/setup-cli@v0.4.1
+        with:
+          version: v0.4.1
+
+      - name: Configure git identity
+        run: |
+          set -euo pipefail
+          git config user.name "cascade-validation"
+          git config user.email "cascade-validation@users.noreply.github.com"
+          if [ -n "${REVALIDATE_SOURCE:-}" ]; then
+            echo "Revalidation requested by: ${REVALIDATE_SOURCE}"
+          fi
+
+      # Shared helpers used by every assertion step. Sourced from $BASH_ENV so the
+      # functions are available in later run blocks without re-declaring them.
+      - name: Install assertion helpers
+        run: |
+          set -euo pipefail
+          helpers="${RUNNER_TEMP}/helpers.sh"
+          cat > "${helpers}" <<'HELPERS'
+          # Read a state sub-key for an env from the manifest via the CLI.
+          state_sha() {
+            cascade status env "$1" --json | jq -r '.state.sha // empty'
+          }
+          state_version() {
+            cascade status env "$1" --json | jq -r '.state.version // empty'
+          }
+          # Assert a value matches a regex, failing the step on mismatch.
+          assert_match() {
+            local label="$1" value="$2" pattern="$3"
+            if [[ "${value}" =~ ${pattern} ]]; then
+              echo "  ok: ${label} (${value}) matches ${pattern}"
+            else
+              echo "::error::${label} value '${value}' does not match ${pattern}"
+              return 1
+            fi
+          }
+          assert_equal() {
+            local label="$1" got="$2" want="$3"
+            if [[ "${got}" == "${want}" ]]; then
+              echo "  ok: ${label} == ${want}"
+            else
+              echo "::error::${label} expected '${want}' got '${got}'"
+              return 1
+            fi
+          }
+          # Look up a release by tag and print its draft/prerelease/latest flags.
+          release_flag() {
+            gh release view "$1" --json "$2" --jq ".$2" 2>/dev/null || echo "missing"
+          }
+          # Snapshot all four env states plus tags and releases into one string so
+          # dry-run steps can compare before and after.
+          full_snapshot() {
+            for e in dev test staging prod; do
+              printf 'env:%s sha:%s ver:%s\n' "${e}" "$(state_sha "${e}")" "$(state_version "${e}")"
+            done
+            echo "tags:"
+            git tag --sort=-creatordate
+            echo "releases:"
+            gh release list --json tagName,isDraft,isPrerelease,isLatest \
+              --jq '.[] | "\(.tagName) draft=\(.isDraft) pre=\(.isPrerelease) latest=\(.isLatest)"' \
+              | sort
+          }
+          # Bounded wait for a workflow_dispatch run that THIS suite triggered.
+          # workflow_dispatch carries no merge commit to key on, so callers
+          # capture a UTC timestamp immediately before `gh workflow run` and
+          # pass it here. The run created at/after that timestamp is the one we
+          # fired; we capture its databaseId and poll THAT exact run to
+          # completion rather than grabbing the global newest run, which a
+          # stale or concurrent dispatch could otherwise win. Prints the run
+          # conclusion on success.
+          wait_for_dispatched_run() {
+            local wf="$1" since="$2" attempts=15 i=0 run_id="" status conclusion
+            while [ "${i}" -lt "${attempts}" ]; do
+              if [ -z "${run_id}" ]; then
+                run_id="$(gh run list --workflow "${wf}" --created ">=${since}" \
+                  --json databaseId,headBranch,status \
+                  --jq '.[0].databaseId // empty')"
+                # Expose the resolved run id to the caller (write once) so the
+                # following register-run step can record it in the reconcile
+                # ledger. Side channel only; stdout still carries the conclusion.
+                if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ]; then
+                  echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
+                fi
+              fi
+              if [ -n "${run_id}" ]; then
+                status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
+                if [ "${status}" = "completed" ]; then
+                  conclusion="$(gh run view "${run_id}" \
+                    --json conclusion --jq '.conclusion // "none"')"
+                  echo "${conclusion}"
+                  return 0
+                fi
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for dispatched ${wf} run since ${since}"
+            return 1
+          }
+          # Wait for the orchestrate run fired by a specific merge commit on main,
+          # keyed on headSha so a stale or concurrent run is never mistaken for
+          # this one. Prints the run conclusion on success.
+          wait_for_orchestrate_sha() {
+            local merge_sha="$1" attempts=15 i=0 run_id="" status conclusion
+            while [ "${i}" -lt "${attempts}" ]; do
+              run_id="$(gh run list --workflow orchestrate.yaml --branch main \
+                --json databaseId,headSha,status \
+                --jq ".[] | select(.headSha==\"${merge_sha}\") | .databaseId" \
+                | head -n1)"
+              # Expose the resolved orchestrate run id to the caller (write once)
+              # so the following register-run step can record it in the reconcile
+              # ledger. Side channel only; stdout still carries the conclusion.
+              if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ] \
+                && [ ! -s "${RESOLVED_RUN_ID_FILE}" ]; then
+                echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
+              fi
+              if [ -n "${run_id}" ]; then
+                status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
+                if [ "${status}" = "completed" ]; then
+                  conclusion="$(gh run view "${run_id}" \
+                    --json conclusion --jq '.conclusion // "none"')"
+                  echo "${conclusion}"
+                  return 0
+                fi
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for orchestrate run for ${merge_sha}"
+            return 1
+          }
+          # Land a src/** change on main through a PAT-authored branch -> PR ->
+          # squash-merge, emulating a real contributor. The PR title carries the
+          # conventional type (squash collapses the branch to one commit whose
+          # subject is the PR title). Prints the merge commit SHA on origin/main.
+          seed_via_pr() {
+            local file="$1" content="$2" title="$3" branch sha
+            branch="scenario/src-$(date +%s)-${RANDOM}"
+            # Route all command chatter to stderr so the function's stdout is
+            # ONLY the merge SHA (callers capture it via command substitution).
+            {
+              git fetch origin main --quiet
+              git checkout -B "${branch}" origin/main
+              mkdir -p src
+              printf '%s\n' "${content}" > "${file}"
+              git add "${file}"
+              git commit --no-gpg-sign -s -m "${title}"
+              git push origin "${branch}"
+              gh pr create --base main --head "${branch}" \
+                --title "${title}" \
+                --body "Automated scenario run; drives orchestrate on merge."
+              gh pr merge "${branch}" --squash --delete-branch
+              git fetch origin main --quiet
+            } >&2
+            sha="$(git rev-parse origin/main)"
+            printf '%s\n' "${sha}"
+          }
+          # Refresh local trunk and poll until the named env carries a version.
+          # cascade's finalize job pushes the "update state" commit to main a
+          # few seconds after the orchestrate/promote run reports success, so a
+          # single fetch+reset can read the pre-state-commit manifest. Re-fetch
+          # trunk and re-read until the env is populated (up to ~60s).
+          sync_env_state() {
+            local env="$1" i=0
+            while [ "${i}" -lt 2 ]; do
+              git fetch origin main --quiet
+              git reset --hard origin/main >/dev/null
+              if [ -n "$(state_version "${env}")" ]; then
+                return 0
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for ${env} state to land on trunk"
+            return 1
+          }
+          # Like sync_env_state, but poll until the env's sha differs from a
+          # known prior value. A rollback re-writes an env that ALREADY carries
+          # a version, so a plain non-empty poll returns the stale pre-rollback
+          # state immediately. Pass the pre-rollback sha and wait for the
+          # finalize state commit that actually changes it.
+          sync_env_state_until_sha_changed() {
+            local env="$1" prior_sha="$2" i=0
+            while [ "${i}" -lt 2 ]; do
+              git fetch origin main --quiet
+              git reset --hard origin/main >/dev/null
+              if [ -n "$(state_sha "${env}")" ] && [ "$(state_sha "${env}")" != "${prior_sha}" ]; then
+                return 0
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for ${env} sha to change from ${prior_sha} on trunk"
+            return 1
+          }
+          # Read the divergence ref an env carries (set to rollback/<env> after a
+          # manual rollback, empty on the linear promotion line).
+          state_ref() {
+            cascade status env "$1" --json | jq -r '.state.ref // empty'
+          }
+          # Append a PASS/FAIL row to the job summary table.
+          summarize() {
+            printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${GITHUB_STEP_SUMMARY}"
+          }
+          HELPERS
+          echo "BASH_ENV=${helpers}" >> "${GITHUB_ENV}"
+          {
+            echo "## scenario-suite results"
+            echo ""
+            echo "| step | result | detail |"
+            echo "| --- | --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+
       # ===================================================================
       # Step 10 - validate-manifest PR gate (#318)
       # The manifest opts into validate_check, so cascade-validate.yaml runs on
@@ -1381,6 +1870,242 @@ jobs:
           reason: step10-validate-valid
           upload: 'true'
 
+
+  probe_rollback:
+    name: Probe rollback variants
+    needs: [lifecycle]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+      # Source for the revalidation request, taken from the event payload via
+      # env to avoid injecting payload text into shell scripts.
+      REVALIDATE_SOURCE: ${{ github.event.client_payload.source }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.CASCADE_STATE_TOKEN }}
+
+      - name: Setup CLI
+        uses: stablekernel/cascade/.github/actions/setup-cli@v0.4.1
+        with:
+          version: v0.4.1
+
+      - name: Configure git identity
+        run: |
+          set -euo pipefail
+          git config user.name "cascade-validation"
+          git config user.email "cascade-validation@users.noreply.github.com"
+          if [ -n "${REVALIDATE_SOURCE:-}" ]; then
+            echo "Revalidation requested by: ${REVALIDATE_SOURCE}"
+          fi
+
+      # Shared helpers used by every assertion step. Sourced from $BASH_ENV so the
+      # functions are available in later run blocks without re-declaring them.
+      - name: Install assertion helpers
+        run: |
+          set -euo pipefail
+          helpers="${RUNNER_TEMP}/helpers.sh"
+          cat > "${helpers}" <<'HELPERS'
+          # Read a state sub-key for an env from the manifest via the CLI.
+          state_sha() {
+            cascade status env "$1" --json | jq -r '.state.sha // empty'
+          }
+          state_version() {
+            cascade status env "$1" --json | jq -r '.state.version // empty'
+          }
+          # Assert a value matches a regex, failing the step on mismatch.
+          assert_match() {
+            local label="$1" value="$2" pattern="$3"
+            if [[ "${value}" =~ ${pattern} ]]; then
+              echo "  ok: ${label} (${value}) matches ${pattern}"
+            else
+              echo "::error::${label} value '${value}' does not match ${pattern}"
+              return 1
+            fi
+          }
+          assert_equal() {
+            local label="$1" got="$2" want="$3"
+            if [[ "${got}" == "${want}" ]]; then
+              echo "  ok: ${label} == ${want}"
+            else
+              echo "::error::${label} expected '${want}' got '${got}'"
+              return 1
+            fi
+          }
+          # Look up a release by tag and print its draft/prerelease/latest flags.
+          release_flag() {
+            gh release view "$1" --json "$2" --jq ".$2" 2>/dev/null || echo "missing"
+          }
+          # Snapshot all four env states plus tags and releases into one string so
+          # dry-run steps can compare before and after.
+          full_snapshot() {
+            for e in dev test staging prod; do
+              printf 'env:%s sha:%s ver:%s\n' "${e}" "$(state_sha "${e}")" "$(state_version "${e}")"
+            done
+            echo "tags:"
+            git tag --sort=-creatordate
+            echo "releases:"
+            gh release list --json tagName,isDraft,isPrerelease,isLatest \
+              --jq '.[] | "\(.tagName) draft=\(.isDraft) pre=\(.isPrerelease) latest=\(.isLatest)"' \
+              | sort
+          }
+          # Bounded wait for a workflow_dispatch run that THIS suite triggered.
+          # workflow_dispatch carries no merge commit to key on, so callers
+          # capture a UTC timestamp immediately before `gh workflow run` and
+          # pass it here. The run created at/after that timestamp is the one we
+          # fired; we capture its databaseId and poll THAT exact run to
+          # completion rather than grabbing the global newest run, which a
+          # stale or concurrent dispatch could otherwise win. Prints the run
+          # conclusion on success.
+          wait_for_dispatched_run() {
+            local wf="$1" since="$2" attempts=15 i=0 run_id="" status conclusion
+            while [ "${i}" -lt "${attempts}" ]; do
+              if [ -z "${run_id}" ]; then
+                run_id="$(gh run list --workflow "${wf}" --created ">=${since}" \
+                  --json databaseId,headBranch,status \
+                  --jq '.[0].databaseId // empty')"
+                # Expose the resolved run id to the caller (write once) so the
+                # following register-run step can record it in the reconcile
+                # ledger. Side channel only; stdout still carries the conclusion.
+                if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ]; then
+                  echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
+                fi
+              fi
+              if [ -n "${run_id}" ]; then
+                status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
+                if [ "${status}" = "completed" ]; then
+                  conclusion="$(gh run view "${run_id}" \
+                    --json conclusion --jq '.conclusion // "none"')"
+                  echo "${conclusion}"
+                  return 0
+                fi
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for dispatched ${wf} run since ${since}"
+            return 1
+          }
+          # Wait for the orchestrate run fired by a specific merge commit on main,
+          # keyed on headSha so a stale or concurrent run is never mistaken for
+          # this one. Prints the run conclusion on success.
+          wait_for_orchestrate_sha() {
+            local merge_sha="$1" attempts=15 i=0 run_id="" status conclusion
+            while [ "${i}" -lt "${attempts}" ]; do
+              run_id="$(gh run list --workflow orchestrate.yaml --branch main \
+                --json databaseId,headSha,status \
+                --jq ".[] | select(.headSha==\"${merge_sha}\") | .databaseId" \
+                | head -n1)"
+              # Expose the resolved orchestrate run id to the caller (write once)
+              # so the following register-run step can record it in the reconcile
+              # ledger. Side channel only; stdout still carries the conclusion.
+              if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ] \
+                && [ ! -s "${RESOLVED_RUN_ID_FILE}" ]; then
+                echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
+              fi
+              if [ -n "${run_id}" ]; then
+                status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
+                if [ "${status}" = "completed" ]; then
+                  conclusion="$(gh run view "${run_id}" \
+                    --json conclusion --jq '.conclusion // "none"')"
+                  echo "${conclusion}"
+                  return 0
+                fi
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for orchestrate run for ${merge_sha}"
+            return 1
+          }
+          # Land a src/** change on main through a PAT-authored branch -> PR ->
+          # squash-merge, emulating a real contributor. The PR title carries the
+          # conventional type (squash collapses the branch to one commit whose
+          # subject is the PR title). Prints the merge commit SHA on origin/main.
+          seed_via_pr() {
+            local file="$1" content="$2" title="$3" branch sha
+            branch="scenario/src-$(date +%s)-${RANDOM}"
+            # Route all command chatter to stderr so the function's stdout is
+            # ONLY the merge SHA (callers capture it via command substitution).
+            {
+              git fetch origin main --quiet
+              git checkout -B "${branch}" origin/main
+              mkdir -p src
+              printf '%s\n' "${content}" > "${file}"
+              git add "${file}"
+              git commit --no-gpg-sign -s -m "${title}"
+              git push origin "${branch}"
+              gh pr create --base main --head "${branch}" \
+                --title "${title}" \
+                --body "Automated scenario run; drives orchestrate on merge."
+              gh pr merge "${branch}" --squash --delete-branch
+              git fetch origin main --quiet
+            } >&2
+            sha="$(git rev-parse origin/main)"
+            printf '%s\n' "${sha}"
+          }
+          # Refresh local trunk and poll until the named env carries a version.
+          # cascade's finalize job pushes the "update state" commit to main a
+          # few seconds after the orchestrate/promote run reports success, so a
+          # single fetch+reset can read the pre-state-commit manifest. Re-fetch
+          # trunk and re-read until the env is populated (up to ~60s).
+          sync_env_state() {
+            local env="$1" i=0
+            while [ "${i}" -lt 2 ]; do
+              git fetch origin main --quiet
+              git reset --hard origin/main >/dev/null
+              if [ -n "$(state_version "${env}")" ]; then
+                return 0
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for ${env} state to land on trunk"
+            return 1
+          }
+          # Like sync_env_state, but poll until the env's sha differs from a
+          # known prior value. A rollback re-writes an env that ALREADY carries
+          # a version, so a plain non-empty poll returns the stale pre-rollback
+          # state immediately. Pass the pre-rollback sha and wait for the
+          # finalize state commit that actually changes it.
+          sync_env_state_until_sha_changed() {
+            local env="$1" prior_sha="$2" i=0
+            while [ "${i}" -lt 2 ]; do
+              git fetch origin main --quiet
+              git reset --hard origin/main >/dev/null
+              if [ -n "$(state_sha "${env}")" ] && [ "$(state_sha "${env}")" != "${prior_sha}" ]; then
+                return 0
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for ${env} sha to change from ${prior_sha} on trunk"
+            return 1
+          }
+          # Read the divergence ref an env carries (set to rollback/<env> after a
+          # manual rollback, empty on the linear promotion line).
+          state_ref() {
+            cascade status env "$1" --json | jq -r '.state.ref // empty'
+          }
+          # Append a PASS/FAIL row to the job summary table.
+          summarize() {
+            printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${GITHUB_STEP_SUMMARY}"
+          }
+          HELPERS
+          echo "BASH_ENV=${helpers}" >> "${GITHUB_ENV}"
+          {
+            echo "## scenario-suite results"
+            echo ""
+            echo "| step | result | detail |"
+            echo "| --- | --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+
       # ===================================================================
       # Step 11 - rollback variants (#321)
       # The generated Rollback workflow exposes dry_run and deployable inputs.
@@ -1459,6 +2184,242 @@ jobs:
           expected-conclusion: success
           reason: step11-rollback-deployable-scoped
           upload: 'true'
+
+
+  probe_concurrency:
+    name: Probe concurrency-cancel and no-change skip
+    needs: [probe_rollback]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+      # Source for the revalidation request, taken from the event payload via
+      # env to avoid injecting payload text into shell scripts.
+      REVALIDATE_SOURCE: ${{ github.event.client_payload.source }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.CASCADE_STATE_TOKEN }}
+
+      - name: Setup CLI
+        uses: stablekernel/cascade/.github/actions/setup-cli@v0.4.1
+        with:
+          version: v0.4.1
+
+      - name: Configure git identity
+        run: |
+          set -euo pipefail
+          git config user.name "cascade-validation"
+          git config user.email "cascade-validation@users.noreply.github.com"
+          if [ -n "${REVALIDATE_SOURCE:-}" ]; then
+            echo "Revalidation requested by: ${REVALIDATE_SOURCE}"
+          fi
+
+      # Shared helpers used by every assertion step. Sourced from $BASH_ENV so the
+      # functions are available in later run blocks without re-declaring them.
+      - name: Install assertion helpers
+        run: |
+          set -euo pipefail
+          helpers="${RUNNER_TEMP}/helpers.sh"
+          cat > "${helpers}" <<'HELPERS'
+          # Read a state sub-key for an env from the manifest via the CLI.
+          state_sha() {
+            cascade status env "$1" --json | jq -r '.state.sha // empty'
+          }
+          state_version() {
+            cascade status env "$1" --json | jq -r '.state.version // empty'
+          }
+          # Assert a value matches a regex, failing the step on mismatch.
+          assert_match() {
+            local label="$1" value="$2" pattern="$3"
+            if [[ "${value}" =~ ${pattern} ]]; then
+              echo "  ok: ${label} (${value}) matches ${pattern}"
+            else
+              echo "::error::${label} value '${value}' does not match ${pattern}"
+              return 1
+            fi
+          }
+          assert_equal() {
+            local label="$1" got="$2" want="$3"
+            if [[ "${got}" == "${want}" ]]; then
+              echo "  ok: ${label} == ${want}"
+            else
+              echo "::error::${label} expected '${want}' got '${got}'"
+              return 1
+            fi
+          }
+          # Look up a release by tag and print its draft/prerelease/latest flags.
+          release_flag() {
+            gh release view "$1" --json "$2" --jq ".$2" 2>/dev/null || echo "missing"
+          }
+          # Snapshot all four env states plus tags and releases into one string so
+          # dry-run steps can compare before and after.
+          full_snapshot() {
+            for e in dev test staging prod; do
+              printf 'env:%s sha:%s ver:%s\n' "${e}" "$(state_sha "${e}")" "$(state_version "${e}")"
+            done
+            echo "tags:"
+            git tag --sort=-creatordate
+            echo "releases:"
+            gh release list --json tagName,isDraft,isPrerelease,isLatest \
+              --jq '.[] | "\(.tagName) draft=\(.isDraft) pre=\(.isPrerelease) latest=\(.isLatest)"' \
+              | sort
+          }
+          # Bounded wait for a workflow_dispatch run that THIS suite triggered.
+          # workflow_dispatch carries no merge commit to key on, so callers
+          # capture a UTC timestamp immediately before `gh workflow run` and
+          # pass it here. The run created at/after that timestamp is the one we
+          # fired; we capture its databaseId and poll THAT exact run to
+          # completion rather than grabbing the global newest run, which a
+          # stale or concurrent dispatch could otherwise win. Prints the run
+          # conclusion on success.
+          wait_for_dispatched_run() {
+            local wf="$1" since="$2" attempts=15 i=0 run_id="" status conclusion
+            while [ "${i}" -lt "${attempts}" ]; do
+              if [ -z "${run_id}" ]; then
+                run_id="$(gh run list --workflow "${wf}" --created ">=${since}" \
+                  --json databaseId,headBranch,status \
+                  --jq '.[0].databaseId // empty')"
+                # Expose the resolved run id to the caller (write once) so the
+                # following register-run step can record it in the reconcile
+                # ledger. Side channel only; stdout still carries the conclusion.
+                if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ]; then
+                  echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
+                fi
+              fi
+              if [ -n "${run_id}" ]; then
+                status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
+                if [ "${status}" = "completed" ]; then
+                  conclusion="$(gh run view "${run_id}" \
+                    --json conclusion --jq '.conclusion // "none"')"
+                  echo "${conclusion}"
+                  return 0
+                fi
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for dispatched ${wf} run since ${since}"
+            return 1
+          }
+          # Wait for the orchestrate run fired by a specific merge commit on main,
+          # keyed on headSha so a stale or concurrent run is never mistaken for
+          # this one. Prints the run conclusion on success.
+          wait_for_orchestrate_sha() {
+            local merge_sha="$1" attempts=15 i=0 run_id="" status conclusion
+            while [ "${i}" -lt "${attempts}" ]; do
+              run_id="$(gh run list --workflow orchestrate.yaml --branch main \
+                --json databaseId,headSha,status \
+                --jq ".[] | select(.headSha==\"${merge_sha}\") | .databaseId" \
+                | head -n1)"
+              # Expose the resolved orchestrate run id to the caller (write once)
+              # so the following register-run step can record it in the reconcile
+              # ledger. Side channel only; stdout still carries the conclusion.
+              if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ] \
+                && [ ! -s "${RESOLVED_RUN_ID_FILE}" ]; then
+                echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
+              fi
+              if [ -n "${run_id}" ]; then
+                status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
+                if [ "${status}" = "completed" ]; then
+                  conclusion="$(gh run view "${run_id}" \
+                    --json conclusion --jq '.conclusion // "none"')"
+                  echo "${conclusion}"
+                  return 0
+                fi
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for orchestrate run for ${merge_sha}"
+            return 1
+          }
+          # Land a src/** change on main through a PAT-authored branch -> PR ->
+          # squash-merge, emulating a real contributor. The PR title carries the
+          # conventional type (squash collapses the branch to one commit whose
+          # subject is the PR title). Prints the merge commit SHA on origin/main.
+          seed_via_pr() {
+            local file="$1" content="$2" title="$3" branch sha
+            branch="scenario/src-$(date +%s)-${RANDOM}"
+            # Route all command chatter to stderr so the function's stdout is
+            # ONLY the merge SHA (callers capture it via command substitution).
+            {
+              git fetch origin main --quiet
+              git checkout -B "${branch}" origin/main
+              mkdir -p src
+              printf '%s\n' "${content}" > "${file}"
+              git add "${file}"
+              git commit --no-gpg-sign -s -m "${title}"
+              git push origin "${branch}"
+              gh pr create --base main --head "${branch}" \
+                --title "${title}" \
+                --body "Automated scenario run; drives orchestrate on merge."
+              gh pr merge "${branch}" --squash --delete-branch
+              git fetch origin main --quiet
+            } >&2
+            sha="$(git rev-parse origin/main)"
+            printf '%s\n' "${sha}"
+          }
+          # Refresh local trunk and poll until the named env carries a version.
+          # cascade's finalize job pushes the "update state" commit to main a
+          # few seconds after the orchestrate/promote run reports success, so a
+          # single fetch+reset can read the pre-state-commit manifest. Re-fetch
+          # trunk and re-read until the env is populated (up to ~60s).
+          sync_env_state() {
+            local env="$1" i=0
+            while [ "${i}" -lt 2 ]; do
+              git fetch origin main --quiet
+              git reset --hard origin/main >/dev/null
+              if [ -n "$(state_version "${env}")" ]; then
+                return 0
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for ${env} state to land on trunk"
+            return 1
+          }
+          # Like sync_env_state, but poll until the env's sha differs from a
+          # known prior value. A rollback re-writes an env that ALREADY carries
+          # a version, so a plain non-empty poll returns the stale pre-rollback
+          # state immediately. Pass the pre-rollback sha and wait for the
+          # finalize state commit that actually changes it.
+          sync_env_state_until_sha_changed() {
+            local env="$1" prior_sha="$2" i=0
+            while [ "${i}" -lt 2 ]; do
+              git fetch origin main --quiet
+              git reset --hard origin/main >/dev/null
+              if [ -n "$(state_sha "${env}")" ] && [ "$(state_sha "${env}")" != "${prior_sha}" ]; then
+                return 0
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for ${env} sha to change from ${prior_sha} on trunk"
+            return 1
+          }
+          # Read the divergence ref an env carries (set to rollback/<env> after a
+          # manual rollback, empty on the linear promotion line).
+          state_ref() {
+            cascade status env "$1" --json | jq -r '.state.ref // empty'
+          }
+          # Append a PASS/FAIL row to the job summary table.
+          summarize() {
+            printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${GITHUB_STEP_SUMMARY}"
+          }
+          HELPERS
+          echo "BASH_ENV=${helpers}" >> "${GITHUB_ENV}"
+          {
+            echo "## scenario-suite results"
+            echo ""
+            echo "| step | result | detail |"
+            echo "| --- | --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
 
       # ===================================================================
       # Step 12 - concurrency-cancel and no-change skip (#333)
@@ -1562,6 +2523,242 @@ jobs:
           expected-conclusion: success
           reason: step12-no-change-skip
           upload: 'true'
+
+
+  probe_hotfix_conflict:
+    name: Probe hotfix cherry-pick conflict
+    needs: [probe_concurrency]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+      # Source for the revalidation request, taken from the event payload via
+      # env to avoid injecting payload text into shell scripts.
+      REVALIDATE_SOURCE: ${{ github.event.client_payload.source }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.CASCADE_STATE_TOKEN }}
+
+      - name: Setup CLI
+        uses: stablekernel/cascade/.github/actions/setup-cli@v0.4.1
+        with:
+          version: v0.4.1
+
+      - name: Configure git identity
+        run: |
+          set -euo pipefail
+          git config user.name "cascade-validation"
+          git config user.email "cascade-validation@users.noreply.github.com"
+          if [ -n "${REVALIDATE_SOURCE:-}" ]; then
+            echo "Revalidation requested by: ${REVALIDATE_SOURCE}"
+          fi
+
+      # Shared helpers used by every assertion step. Sourced from $BASH_ENV so the
+      # functions are available in later run blocks without re-declaring them.
+      - name: Install assertion helpers
+        run: |
+          set -euo pipefail
+          helpers="${RUNNER_TEMP}/helpers.sh"
+          cat > "${helpers}" <<'HELPERS'
+          # Read a state sub-key for an env from the manifest via the CLI.
+          state_sha() {
+            cascade status env "$1" --json | jq -r '.state.sha // empty'
+          }
+          state_version() {
+            cascade status env "$1" --json | jq -r '.state.version // empty'
+          }
+          # Assert a value matches a regex, failing the step on mismatch.
+          assert_match() {
+            local label="$1" value="$2" pattern="$3"
+            if [[ "${value}" =~ ${pattern} ]]; then
+              echo "  ok: ${label} (${value}) matches ${pattern}"
+            else
+              echo "::error::${label} value '${value}' does not match ${pattern}"
+              return 1
+            fi
+          }
+          assert_equal() {
+            local label="$1" got="$2" want="$3"
+            if [[ "${got}" == "${want}" ]]; then
+              echo "  ok: ${label} == ${want}"
+            else
+              echo "::error::${label} expected '${want}' got '${got}'"
+              return 1
+            fi
+          }
+          # Look up a release by tag and print its draft/prerelease/latest flags.
+          release_flag() {
+            gh release view "$1" --json "$2" --jq ".$2" 2>/dev/null || echo "missing"
+          }
+          # Snapshot all four env states plus tags and releases into one string so
+          # dry-run steps can compare before and after.
+          full_snapshot() {
+            for e in dev test staging prod; do
+              printf 'env:%s sha:%s ver:%s\n' "${e}" "$(state_sha "${e}")" "$(state_version "${e}")"
+            done
+            echo "tags:"
+            git tag --sort=-creatordate
+            echo "releases:"
+            gh release list --json tagName,isDraft,isPrerelease,isLatest \
+              --jq '.[] | "\(.tagName) draft=\(.isDraft) pre=\(.isPrerelease) latest=\(.isLatest)"' \
+              | sort
+          }
+          # Bounded wait for a workflow_dispatch run that THIS suite triggered.
+          # workflow_dispatch carries no merge commit to key on, so callers
+          # capture a UTC timestamp immediately before `gh workflow run` and
+          # pass it here. The run created at/after that timestamp is the one we
+          # fired; we capture its databaseId and poll THAT exact run to
+          # completion rather than grabbing the global newest run, which a
+          # stale or concurrent dispatch could otherwise win. Prints the run
+          # conclusion on success.
+          wait_for_dispatched_run() {
+            local wf="$1" since="$2" attempts=15 i=0 run_id="" status conclusion
+            while [ "${i}" -lt "${attempts}" ]; do
+              if [ -z "${run_id}" ]; then
+                run_id="$(gh run list --workflow "${wf}" --created ">=${since}" \
+                  --json databaseId,headBranch,status \
+                  --jq '.[0].databaseId // empty')"
+                # Expose the resolved run id to the caller (write once) so the
+                # following register-run step can record it in the reconcile
+                # ledger. Side channel only; stdout still carries the conclusion.
+                if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ]; then
+                  echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
+                fi
+              fi
+              if [ -n "${run_id}" ]; then
+                status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
+                if [ "${status}" = "completed" ]; then
+                  conclusion="$(gh run view "${run_id}" \
+                    --json conclusion --jq '.conclusion // "none"')"
+                  echo "${conclusion}"
+                  return 0
+                fi
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for dispatched ${wf} run since ${since}"
+            return 1
+          }
+          # Wait for the orchestrate run fired by a specific merge commit on main,
+          # keyed on headSha so a stale or concurrent run is never mistaken for
+          # this one. Prints the run conclusion on success.
+          wait_for_orchestrate_sha() {
+            local merge_sha="$1" attempts=15 i=0 run_id="" status conclusion
+            while [ "${i}" -lt "${attempts}" ]; do
+              run_id="$(gh run list --workflow orchestrate.yaml --branch main \
+                --json databaseId,headSha,status \
+                --jq ".[] | select(.headSha==\"${merge_sha}\") | .databaseId" \
+                | head -n1)"
+              # Expose the resolved orchestrate run id to the caller (write once)
+              # so the following register-run step can record it in the reconcile
+              # ledger. Side channel only; stdout still carries the conclusion.
+              if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ] \
+                && [ ! -s "${RESOLVED_RUN_ID_FILE}" ]; then
+                echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
+              fi
+              if [ -n "${run_id}" ]; then
+                status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
+                if [ "${status}" = "completed" ]; then
+                  conclusion="$(gh run view "${run_id}" \
+                    --json conclusion --jq '.conclusion // "none"')"
+                  echo "${conclusion}"
+                  return 0
+                fi
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for orchestrate run for ${merge_sha}"
+            return 1
+          }
+          # Land a src/** change on main through a PAT-authored branch -> PR ->
+          # squash-merge, emulating a real contributor. The PR title carries the
+          # conventional type (squash collapses the branch to one commit whose
+          # subject is the PR title). Prints the merge commit SHA on origin/main.
+          seed_via_pr() {
+            local file="$1" content="$2" title="$3" branch sha
+            branch="scenario/src-$(date +%s)-${RANDOM}"
+            # Route all command chatter to stderr so the function's stdout is
+            # ONLY the merge SHA (callers capture it via command substitution).
+            {
+              git fetch origin main --quiet
+              git checkout -B "${branch}" origin/main
+              mkdir -p src
+              printf '%s\n' "${content}" > "${file}"
+              git add "${file}"
+              git commit --no-gpg-sign -s -m "${title}"
+              git push origin "${branch}"
+              gh pr create --base main --head "${branch}" \
+                --title "${title}" \
+                --body "Automated scenario run; drives orchestrate on merge."
+              gh pr merge "${branch}" --squash --delete-branch
+              git fetch origin main --quiet
+            } >&2
+            sha="$(git rev-parse origin/main)"
+            printf '%s\n' "${sha}"
+          }
+          # Refresh local trunk and poll until the named env carries a version.
+          # cascade's finalize job pushes the "update state" commit to main a
+          # few seconds after the orchestrate/promote run reports success, so a
+          # single fetch+reset can read the pre-state-commit manifest. Re-fetch
+          # trunk and re-read until the env is populated (up to ~60s).
+          sync_env_state() {
+            local env="$1" i=0
+            while [ "${i}" -lt 2 ]; do
+              git fetch origin main --quiet
+              git reset --hard origin/main >/dev/null
+              if [ -n "$(state_version "${env}")" ]; then
+                return 0
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for ${env} state to land on trunk"
+            return 1
+          }
+          # Like sync_env_state, but poll until the env's sha differs from a
+          # known prior value. A rollback re-writes an env that ALREADY carries
+          # a version, so a plain non-empty poll returns the stale pre-rollback
+          # state immediately. Pass the pre-rollback sha and wait for the
+          # finalize state commit that actually changes it.
+          sync_env_state_until_sha_changed() {
+            local env="$1" prior_sha="$2" i=0
+            while [ "${i}" -lt 2 ]; do
+              git fetch origin main --quiet
+              git reset --hard origin/main >/dev/null
+              if [ -n "$(state_sha "${env}")" ] && [ "$(state_sha "${env}")" != "${prior_sha}" ]; then
+                return 0
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for ${env} sha to change from ${prior_sha} on trunk"
+            return 1
+          }
+          # Read the divergence ref an env carries (set to rollback/<env> after a
+          # manual rollback, empty on the linear promotion line).
+          state_ref() {
+            cascade status env "$1" --json | jq -r '.state.ref // empty'
+          }
+          # Append a PASS/FAIL row to the job summary table.
+          summarize() {
+            printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${GITHUB_STEP_SUMMARY}"
+          }
+          HELPERS
+          echo "BASH_ENV=${helpers}" >> "${GITHUB_ENV}"
+          {
+            echo "## scenario-suite results"
+            echo ""
+            echo "| step | result | detail |"
+            echo "| --- | --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
 
       # ===================================================================
       # Step 13 - hotfix cherry-pick conflict (#334)
@@ -1676,6 +2873,242 @@ jobs:
           reason: step13-hotfix-conflict
           upload: 'true'
 
+
+  probe_merge_queue:
+    name: Probe merge_queue speculative run
+    needs: [probe_hotfix_conflict, open-window]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+      GITHUB_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+      # Source for the revalidation request, taken from the event payload via
+      # env to avoid injecting payload text into shell scripts.
+      REVALIDATE_SOURCE: ${{ github.event.client_payload.source }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.CASCADE_STATE_TOKEN }}
+
+      - name: Setup CLI
+        uses: stablekernel/cascade/.github/actions/setup-cli@v0.4.1
+        with:
+          version: v0.4.1
+
+      - name: Configure git identity
+        run: |
+          set -euo pipefail
+          git config user.name "cascade-validation"
+          git config user.email "cascade-validation@users.noreply.github.com"
+          if [ -n "${REVALIDATE_SOURCE:-}" ]; then
+            echo "Revalidation requested by: ${REVALIDATE_SOURCE}"
+          fi
+
+      # Shared helpers used by every assertion step. Sourced from $BASH_ENV so the
+      # functions are available in later run blocks without re-declaring them.
+      - name: Install assertion helpers
+        run: |
+          set -euo pipefail
+          helpers="${RUNNER_TEMP}/helpers.sh"
+          cat > "${helpers}" <<'HELPERS'
+          # Read a state sub-key for an env from the manifest via the CLI.
+          state_sha() {
+            cascade status env "$1" --json | jq -r '.state.sha // empty'
+          }
+          state_version() {
+            cascade status env "$1" --json | jq -r '.state.version // empty'
+          }
+          # Assert a value matches a regex, failing the step on mismatch.
+          assert_match() {
+            local label="$1" value="$2" pattern="$3"
+            if [[ "${value}" =~ ${pattern} ]]; then
+              echo "  ok: ${label} (${value}) matches ${pattern}"
+            else
+              echo "::error::${label} value '${value}' does not match ${pattern}"
+              return 1
+            fi
+          }
+          assert_equal() {
+            local label="$1" got="$2" want="$3"
+            if [[ "${got}" == "${want}" ]]; then
+              echo "  ok: ${label} == ${want}"
+            else
+              echo "::error::${label} expected '${want}' got '${got}'"
+              return 1
+            fi
+          }
+          # Look up a release by tag and print its draft/prerelease/latest flags.
+          release_flag() {
+            gh release view "$1" --json "$2" --jq ".$2" 2>/dev/null || echo "missing"
+          }
+          # Snapshot all four env states plus tags and releases into one string so
+          # dry-run steps can compare before and after.
+          full_snapshot() {
+            for e in dev test staging prod; do
+              printf 'env:%s sha:%s ver:%s\n' "${e}" "$(state_sha "${e}")" "$(state_version "${e}")"
+            done
+            echo "tags:"
+            git tag --sort=-creatordate
+            echo "releases:"
+            gh release list --json tagName,isDraft,isPrerelease,isLatest \
+              --jq '.[] | "\(.tagName) draft=\(.isDraft) pre=\(.isPrerelease) latest=\(.isLatest)"' \
+              | sort
+          }
+          # Bounded wait for a workflow_dispatch run that THIS suite triggered.
+          # workflow_dispatch carries no merge commit to key on, so callers
+          # capture a UTC timestamp immediately before `gh workflow run` and
+          # pass it here. The run created at/after that timestamp is the one we
+          # fired; we capture its databaseId and poll THAT exact run to
+          # completion rather than grabbing the global newest run, which a
+          # stale or concurrent dispatch could otherwise win. Prints the run
+          # conclusion on success.
+          wait_for_dispatched_run() {
+            local wf="$1" since="$2" attempts=15 i=0 run_id="" status conclusion
+            while [ "${i}" -lt "${attempts}" ]; do
+              if [ -z "${run_id}" ]; then
+                run_id="$(gh run list --workflow "${wf}" --created ">=${since}" \
+                  --json databaseId,headBranch,status \
+                  --jq '.[0].databaseId // empty')"
+                # Expose the resolved run id to the caller (write once) so the
+                # following register-run step can record it in the reconcile
+                # ledger. Side channel only; stdout still carries the conclusion.
+                if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ]; then
+                  echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
+                fi
+              fi
+              if [ -n "${run_id}" ]; then
+                status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
+                if [ "${status}" = "completed" ]; then
+                  conclusion="$(gh run view "${run_id}" \
+                    --json conclusion --jq '.conclusion // "none"')"
+                  echo "${conclusion}"
+                  return 0
+                fi
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for dispatched ${wf} run since ${since}"
+            return 1
+          }
+          # Wait for the orchestrate run fired by a specific merge commit on main,
+          # keyed on headSha so a stale or concurrent run is never mistaken for
+          # this one. Prints the run conclusion on success.
+          wait_for_orchestrate_sha() {
+            local merge_sha="$1" attempts=15 i=0 run_id="" status conclusion
+            while [ "${i}" -lt "${attempts}" ]; do
+              run_id="$(gh run list --workflow orchestrate.yaml --branch main \
+                --json databaseId,headSha,status \
+                --jq ".[] | select(.headSha==\"${merge_sha}\") | .databaseId" \
+                | head -n1)"
+              # Expose the resolved orchestrate run id to the caller (write once)
+              # so the following register-run step can record it in the reconcile
+              # ledger. Side channel only; stdout still carries the conclusion.
+              if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ] \
+                && [ ! -s "${RESOLVED_RUN_ID_FILE}" ]; then
+                echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
+              fi
+              if [ -n "${run_id}" ]; then
+                status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
+                if [ "${status}" = "completed" ]; then
+                  conclusion="$(gh run view "${run_id}" \
+                    --json conclusion --jq '.conclusion // "none"')"
+                  echo "${conclusion}"
+                  return 0
+                fi
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for orchestrate run for ${merge_sha}"
+            return 1
+          }
+          # Land a src/** change on main through a PAT-authored branch -> PR ->
+          # squash-merge, emulating a real contributor. The PR title carries the
+          # conventional type (squash collapses the branch to one commit whose
+          # subject is the PR title). Prints the merge commit SHA on origin/main.
+          seed_via_pr() {
+            local file="$1" content="$2" title="$3" branch sha
+            branch="scenario/src-$(date +%s)-${RANDOM}"
+            # Route all command chatter to stderr so the function's stdout is
+            # ONLY the merge SHA (callers capture it via command substitution).
+            {
+              git fetch origin main --quiet
+              git checkout -B "${branch}" origin/main
+              mkdir -p src
+              printf '%s\n' "${content}" > "${file}"
+              git add "${file}"
+              git commit --no-gpg-sign -s -m "${title}"
+              git push origin "${branch}"
+              gh pr create --base main --head "${branch}" \
+                --title "${title}" \
+                --body "Automated scenario run; drives orchestrate on merge."
+              gh pr merge "${branch}" --squash --delete-branch
+              git fetch origin main --quiet
+            } >&2
+            sha="$(git rev-parse origin/main)"
+            printf '%s\n' "${sha}"
+          }
+          # Refresh local trunk and poll until the named env carries a version.
+          # cascade's finalize job pushes the "update state" commit to main a
+          # few seconds after the orchestrate/promote run reports success, so a
+          # single fetch+reset can read the pre-state-commit manifest. Re-fetch
+          # trunk and re-read until the env is populated (up to ~60s).
+          sync_env_state() {
+            local env="$1" i=0
+            while [ "${i}" -lt 2 ]; do
+              git fetch origin main --quiet
+              git reset --hard origin/main >/dev/null
+              if [ -n "$(state_version "${env}")" ]; then
+                return 0
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for ${env} state to land on trunk"
+            return 1
+          }
+          # Like sync_env_state, but poll until the env's sha differs from a
+          # known prior value. A rollback re-writes an env that ALREADY carries
+          # a version, so a plain non-empty poll returns the stale pre-rollback
+          # state immediately. Pass the pre-rollback sha and wait for the
+          # finalize state commit that actually changes it.
+          sync_env_state_until_sha_changed() {
+            local env="$1" prior_sha="$2" i=0
+            while [ "${i}" -lt 2 ]; do
+              git fetch origin main --quiet
+              git reset --hard origin/main >/dev/null
+              if [ -n "$(state_sha "${env}")" ] && [ "$(state_sha "${env}")" != "${prior_sha}" ]; then
+                return 0
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for ${env} sha to change from ${prior_sha} on trunk"
+            return 1
+          }
+          # Read the divergence ref an env carries (set to rollback/<env> after a
+          # manual rollback, empty on the linear promotion line).
+          state_ref() {
+            cascade status env "$1" --json | jq -r '.state.ref // empty'
+          }
+          # Append a PASS/FAIL row to the job summary table.
+          summarize() {
+            printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${GITHUB_STEP_SUMMARY}"
+          }
+          HELPERS
+          echo "BASH_ENV=${helpers}" >> "${GITHUB_ENV}"
+          {
+            echo "## scenario-suite results"
+            echo ""
+            echo "| step | result | detail |"
+            echo "| --- | --- | --- |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+
       # ===================================================================
       # Step 14 - merge_queue speculative validation (#319)
       # cascade-merge-queue.yaml runs on merge_group only - it cannot be
@@ -1698,7 +3131,7 @@ jobs:
           # captured before any dispatch, so any present run is in-window.
           mq_id="$(gh run list --workflow cascade-merge-queue.yaml \
             --event merge_group \
-            --created ">=${{ steps.window.outputs.window-start }}" \
+            --created ">=${{ needs.open-window.outputs.window-start }}" \
             --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")"
           if [ -z "${mq_id}" ]; then
             echo "::notice::no merge_group run in window; merge-queue lane covered by gen-time shape assertion"
@@ -1727,18 +3160,6 @@ jobs:
           reason: step14-merge-queue-speculative
           upload: 'true'
 
-      - name: Final snapshot
-        if: always()
-        run: |
-          set -euo pipefail
-          {
-            echo ""
-            echo "### final state snapshot"
-            echo ""
-            echo '```'
-            full_snapshot || echo "snapshot unavailable"
-            echo '```'
-          } >> "${GITHUB_STEP_SUMMARY}"
 
   gen-time-checks:
     name: gen-time checks
@@ -1828,25 +3249,24 @@ jobs:
           grep -q "cascade --dry-run orchestrate setup" .github/workflows/cascade-merge-queue.yaml || { echo "::error::cascade --dry-run orchestrate setup not found in merge-queue yaml"; exit 1; }
           echo "PASS cascade --dry-run orchestrate setup present"
 
-  # ---------------------------------------------------------------------
-  # Reconcile gate: structural coverage backstop. The suite's own asserts above
-  # still gate each run they remember to wait on; this job is additive. It
-  # enumerates EVERY run this repo produced since window-start (captured before
-  # the first dispatch) and fails if any is unaccounted for in the ledger the
-  # register-run steps uploaded - an unregistered non-success run, or a
-  # registered run that concluded other than its expected conclusion. That turns
-  # any fire-and-forget run the suite forgot to gate (historically the
-  # pull_request Cascade Hotfix Finalize runs) into a hard red.
+  # Reconcile gate: the structural coverage backstop. Each probe job's asserts
+  # still gate the runs it waits on; this job is additive. It enumerates EVERY
+  # run this repo produced since window-start (captured by open-window before
+  # any dispatch) and fails closed if any is unaccounted for in the merged
+  # ledger: an unregistered non-success run, or a registered run that concluded
+  # other than its expected conclusion. needs lists every run-causing job so the
+  # ledger aggregates across all of them; if: always() runs it even when a probe
+  # failed, so the full window is always enumerated.
   reconcile:
     name: Reconcile scenario-window runs
-    needs: [scenario-suite]
+    needs: [open-window, lifecycle, probe_drift, probe_validate, probe_rollback, probe_concurrency, probe_hotfix_conflict, probe_merge_queue]
     if: always()
     uses: stablekernel/cascade/.github/workflows/fleet-reconcile.yaml@main
     permissions:
       contents: read
       actions: read
     with:
-      window-start: ${{ needs.scenario-suite.outputs.window-start }}
-      # Artifact mode: each register-run step uploaded a per-job ledger under
+      window-start: ${{ needs.open-window.outputs.window-start }}
+      # Artifact mode: every register-run step uploaded a per-job ledger under
       # the default cascade-run-ledger-* name; reconcile globs and merges them.
       cascade-ref: main
