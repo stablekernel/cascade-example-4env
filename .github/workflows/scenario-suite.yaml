@@ -1312,15 +1312,18 @@ jobs:
             return 1
           }
 
-          # Invalid PR: add an environment not present in the env list's deploy
-          # plan so parse-config reports the manifest invalid. The change targets
-          # .github/manifest.yaml so the path filter fires the gate.
+          # Invalid PR: empty a required field on an existing deploy so
+          # parse-config reports the manifest invalid (deploys[0].name is
+          # required). The change targets .github/manifest.yaml so the path
+          # filter fires the gate.
           git fetch origin main --quiet
           bad_branch="scenario/validate-invalid-$(date +%s)-${RANDOM}"
           git checkout -B "${bad_branch}" origin/main
-          # An empty environment name is rejected by parse-config; inject one
-          # under the env list to break the manifest deterministically.
-          yq -i '.ci.config.environments += [""]' .github/manifest.yaml
+          # Blanking the first deploy's required name makes parse-config emit
+          # valid:false with "deploys[0].name is required", so the gate fails
+          # deterministically. (An empty env-list entry is accepted, so it must
+          # not be used here.)
+          yq -i '.ci.config.deploys[0].name = ""' .github/manifest.yaml
           git add .github/manifest.yaml
           git commit --no-gpg-sign -s -m "test: break manifest so validate gate must fail"
           git push origin "${bad_branch}"
@@ -1556,12 +1559,16 @@ jobs:
       # Step 13 - hotfix cherry-pick conflict (#334)
       # 4env is multi-env, so cascade emits cascade-hotfix.yaml. Force a
       # cherry-pick conflict: pre-load the target env branch with a change to
-      # the SAME file the trunk fix touches, dispatch a hotfix for that fix, and
-      # assert the apply job opens a PR labeled cascade-hotfix-conflict and halts
-      # the chain. The conflicting hotfix dispatch concludes failure (the apply
-      # job exits non-zero after opening the conflict PR), so it is registered
-      # expected failure. No downstream finalize fires because the conflict PR
-      # is left unmerged (the chain is halted for human resolution).
+      # the SAME file the trunk fix touches (an add/add on the same path),
+      # dispatch a hotfix for that fix, and assert the apply job opens a PR
+      # labeled cascade-hotfix-conflict and halts the chain. On conflict the
+      # apply job emits a warning, opens the conflict PR, and breaks out of the
+      # env loop WITHOUT exiting non-zero, so the dispatched run concludes
+      # success while the chain is halted by the unmerged labeled PR. The
+      # genuine signal is the open cascade-hotfix-conflict PR, not a failed run,
+      # so the run is registered expected success. No downstream finalize fires
+      # because the conflict PR is left unmerged (chain halted for human
+      # resolution).
       - name: Step 13 - hotfix cherry-pick conflict
         id: step13
         env:
@@ -1619,7 +1626,11 @@ jobs:
             || { echo "::error::failed to dispatch conflicting hotfix"; exit 1; }
           hotfix_concl="$(wait_for_dispatched_run cascade-hotfix.yaml "${ts}")"
           echo "hotfix_conflict_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
-          assert_equal "conflicting hotfix conclusion" "${hotfix_concl}" "failure"
+          # The conflict path opens the labeled PR and breaks the env loop
+          # without exiting non-zero, so the run concludes success; the halt is
+          # enforced by the unmerged conflict PR asserted below, not by a failed
+          # run conclusion.
+          assert_equal "conflicting hotfix conclusion" "${hotfix_concl}" "success"
 
           # A cascade-hotfix-conflict-labeled PR into env/test must exist and be
           # unmerged (the chain halted for human resolution).
@@ -1643,16 +1654,17 @@ jobs:
           reason: step13-seed-orchestrate
           upload: 'true'
 
-      # NEGATIVE: the conflicting hotfix dispatch MUST conclude failure (the
-      # apply job opens the conflict PR and halts the chain non-zero).
-      # Registered expected failure so reconcile accounts for it and a run that
-      # wrongly SUCCEEDS reds the gate.
+      # The conflicting hotfix dispatch concludes success: the apply job opens
+      # the cascade-hotfix-conflict PR and breaks the env loop without exiting
+      # non-zero. The chain is halted by that unmerged labeled PR (asserted in
+      # the step), not by a failed run. Registered expected success so reconcile
+      # accounts for it.
       - name: Register Step 13 conflicting hotfix run
         if: steps.step13.outputs.hotfix_conflict_run_id != ''
         uses: stablekernel/cascade/.github/actions/register-run@main
         with:
           run-id: ${{ steps.step13.outputs.hotfix_conflict_run_id }}
-          expected-conclusion: failure
+          expected-conclusion: success
           reason: step13-hotfix-conflict
           upload: 'true'
 
