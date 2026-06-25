@@ -1205,8 +1205,8 @@ jobs:
           git fetch origin main --quiet
           diverged_branch="scenario/drift-diverged-$(date +%s)-${RANDOM}"
           git checkout -B "${diverged_branch}" origin/main
-          printf '\n# drift probe %s\n' "$(date -u +%FT%TWZ)" >> .github/workflows/deploy-app.yaml
-          git add .github/workflows/deploy-app.yaml
+          printf '\n# drift probe %s\n' "$(date -u +%FT%TWZ)" >> .github/workflows/orchestrate.yaml
+          git add .github/workflows/orchestrate.yaml
           git commit --no-gpg-sign -s -m "test: perturb generated workflow to diverge drift digest"
           git push origin "${diverged_branch}"
           gh pr create --base main --head "${diverged_branch}" \
