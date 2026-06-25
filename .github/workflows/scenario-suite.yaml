@@ -1548,18 +1548,11 @@ jobs:
           reason: step12-concurrency-survivor
           upload: 'true'
 
-      # NEGATIVE: the older orchestrate run is cancelled by the survivor
-      # entering the same concurrency group. Registered expected cancelled so
-      # reconcile accounts for it (only when it actually cancelled; a
-      # superseded-before-start run carries no id and is skipped).
-      - name: Register Step 12 concurrency-cancelled run
-        if: steps.step12.outputs.orchestrate_cancelled_run_id != ''
-        uses: stablekernel/cascade/.github/actions/register-run@main
-        with:
-          run-id: ${{ steps.step12.outputs.orchestrate_cancelled_run_id }}
-          expected-conclusion: cancelled
-          reason: step12-concurrency-cancelled
-          upload: 'true'
+      # The older orchestrate run is cancelled by the survivor entering the same
+      # concurrency group. It is NOT registered: register-run only accepts
+      # success or failure, and the reconcile gate already accounts for a
+      # cancelled run as superseded by the registered survivor in the same lane,
+      # so registering it is both unsupported and unnecessary.
 
       - name: Register Step 12 no-change-skip orchestrate run
         if: steps.step12.outputs.orchestrate_nochange_run_id != ''
