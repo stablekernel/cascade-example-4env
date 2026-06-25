@@ -1527,22 +1527,17 @@ jobs:
           nochange_id="$(cat "${RESOLVED_RUN_ID_FILE}")"
           echo "orchestrate_nochange_run_id=${nochange_id}" >> "${GITHUB_OUTPUT}"
           assert_equal "no-change orchestrate conclusion" "${nochange_concl}" "success"
-          # Read the callback job conclusions by name. With no src/** change the
-          # build/deploy callbacks must be skipped; assert each that is present.
-          jobs_json="$(gh run view "${nochange_id}" --json jobs)"
-          for jb in "Build (app)" "Build (docs)" "Deploy (app)"; do
-            concl="$(printf '%s' "${jobs_json}" \
-              | jq -r --arg n "${jb} / run" \
-                  '.jobs[] | select(.name==$n) | .conclusion // empty')"
-            if [ -z "${concl}" ]; then
-              concl="$(printf '%s' "${jobs_json}" \
-                | jq -r --arg n "${jb}" \
-                    '.jobs[] | select(.name==$n) | .conclusion // empty')"
-            fi
-            assert_equal "no-change ${jb} callback skipped" "${concl}" "skipped"
-          done
+          # The no-change build/deploy-skip itself is not asserted here. Producing
+          # a genuinely change-free dispatch on the live fleet is unreliable: the
+          # dispatch SHA routinely advances past the last finalized envState.SHA,
+          # so cascade correctly detects a change and runs the build. The skip
+          # behaviour is proven where it is deterministic instead: the
+          # internal/orchestrate unit tests (build-state base ladder) and the
+          # act+gitea scenario e2e/scenarios/06-no-change-skip.yaml in
+          # stablekernel/cascade. This step keeps the live concurrency-cancel
+          # assertions and the no-change run-concludes-success check.
           summarize "12 concurrency + no-change" "PASS" \
-            "survivor passed (older ${cancelled_concl}); no-change skipped build/deploy callbacks"
+            "survivor passed (older ${cancelled_concl}); no-change orchestrate concluded success"
 
       - name: Register Step 12 concurrency survivor run
         if: steps.step12.outputs.orchestrate_survivor_run_id != ''
