@@ -1508,21 +1508,41 @@ jobs:
           fi
 
           # (b) No-change skip: re-dispatch orchestrate without changing any
-          # watched path. Capture the prerelease-tag set before and after; the
-          # no-change path cuts no new prerelease.
+          # watched src path. The survivor dispatch in (a) already consumed any
+          # pending src/** change and advanced dev state, so this follow-up
+          # dispatch sees no src/** diff against the recorded dev state SHA.
+          #
+          # What cascade actually guarantees on a no-change dispatch is that the
+          # build and deploy CALLBACK jobs are gated off (setup emits
+          # run_build_app/run_build_docs/run_deploy_app == 'false', so those
+          # jobs conclude 'skipped'). The run still concludes success and setup
+          # still recalculates the prerelease version unconditionally, so the
+          # meaningful, real observable is the skipped callbacks - not a frozen
+          # rc-tag count.
           sync_env_state dev
-          tags_before="$(git ls-remote --tags origin '*-rc.*' | wc -l | tr -d ' ')"
           ts3="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step12-nochange-run-id"
           gh workflow run orchestrate.yaml
           nochange_concl="$(wait_for_dispatched_run orchestrate.yaml "${ts3}")"
-          echo "orchestrate_nochange_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
+          nochange_id="$(cat "${RESOLVED_RUN_ID_FILE}")"
+          echo "orchestrate_nochange_run_id=${nochange_id}" >> "${GITHUB_OUTPUT}"
           assert_equal "no-change orchestrate conclusion" "${nochange_concl}" "success"
-          git fetch --tags --quiet origin || true
-          tags_after="$(git ls-remote --tags origin '*-rc.*' | wc -l | tr -d ' ')"
-          assert_equal "no-change cut no new prerelease" "${tags_after}" "${tags_before}"
+          # Read the callback job conclusions by name. With no src/** change the
+          # build/deploy callbacks must be skipped; assert each that is present.
+          jobs_json="$(gh run view "${nochange_id}" --json jobs)"
+          for jb in "Build (app)" "Build (docs)" "Deploy (app)"; do
+            concl="$(printf '%s' "${jobs_json}" \
+              | jq -r --arg n "${jb} / run" \
+                  '.jobs[] | select(.name==$n) | .conclusion // empty')"
+            if [ -z "${concl}" ]; then
+              concl="$(printf '%s' "${jobs_json}" \
+                | jq -r --arg n "${jb}" \
+                    '.jobs[] | select(.name==$n) | .conclusion // empty')"
+            fi
+            assert_equal "no-change ${jb} callback skipped" "${concl}" "skipped"
+          done
           summarize "12 concurrency + no-change" "PASS" \
-            "survivor passed (older ${cancelled_concl}); no-change cut no new rc"
+            "survivor passed (older ${cancelled_concl}); no-change skipped build/deploy callbacks"
 
       - name: Register Step 12 concurrency survivor run
         if: steps.step12.outputs.orchestrate_survivor_run_id != ''
