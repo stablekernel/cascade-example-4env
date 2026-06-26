@@ -57,7 +57,7 @@ ci:
   state:
     dev:
       sha: 35ae4fabc8d4e93b679d05d088aa87242109b5e7
-      version: v2.0.2-rc.1
+      version: v0.5.0-rc.10
       committed_at: "2026-06-26T08:29:07Z"
       committed_by: joshua-temple
       deploys:
@@ -109,62 +109,62 @@ ci:
           committed_by: joshua-temple
     staging:
       sha: 714d39992c6b10a794bf555b6bafcbbc539ff602
-      version: v2.0.0-rc.0
+      version: v0.5.0-rc.10
       committed_at: "2026-06-26T08:13:56Z"
       committed_by: joshua-temple
       deploys:
         app:
           sha: 714d39992c6b10a794bf555b6bafcbbc539ff602
-          version: v2.0.0-rc.0
+          version: v0.5.0-rc.10
           deployed_at: "2026-06-26T08:13:56Z"
           deployed_by: joshua-temple
       previous:
         - sha: d9a373dbf881dc3f862254088e04635a5cc33310
-          version: v1.1.0-rc.0
+          version: v0.5.0-rc.10
           committed_at: "2026-06-26T08:10:34Z"
           committed_by: joshua-temple
         - sha: 3b5526e39a23a4c5e4b6463a512005076d2d8e8d
-          version: v1.0.1-rc.0
+          version: v0.5.0-rc.10
           committed_at: "2026-06-26T08:03:57Z"
           committed_by: joshua-temple
         - sha: a0caa897950f014e48215314c95472634989e3b2
-          version: v1.0.0-rc.0.hotfix.2
+          version: v0.5.0-rc.10.hotfix.2
           committed_at: "2026-06-26T08:01:17Z"
           committed_by: joshua-temple
         - sha: cd7a5a377f5506bf7768ca0ddfc4322adca3cda1
-          version: v1.0.0-rc.0
+          version: v0.5.0-rc.10
           committed_at: "2026-06-26T07:57:58Z"
           committed_by: joshua-temple
     test:
       sha: e854a6421780b94890b56bcaa4bd66d6ac49b017
-      version: v2.0.1-rc.3
+      version: v0.5.0-rc.10
       committed_at: "2026-06-26T08:26:39Z"
       committed_by: joshua-temple
       deploys:
         app:
           sha: e854a6421780b94890b56bcaa4bd66d6ac49b017
-          version: v2.0.1-rc.3
+          version: v0.5.0-rc.10
           deployed_at: "2026-06-26T08:26:39Z"
           deployed_by: joshua-temple
       previous:
         - sha: 714d39992c6b10a794bf555b6bafcbbc539ff602
-          version: v2.0.0-rc.0
+          version: v0.5.0-rc.10
           committed_at: "2026-06-26T08:13:56Z"
           committed_by: joshua-temple
         - sha: d9a373dbf881dc3f862254088e04635a5cc33310
-          version: v1.1.0-rc.0
+          version: v0.5.0-rc.10
           committed_at: "2026-06-26T08:10:34Z"
           committed_by: joshua-temple
         - sha: 3b5526e39a23a4c5e4b6463a512005076d2d8e8d
-          version: v1.0.1-rc.0
+          version: v0.5.0-rc.10
           committed_at: "2026-06-26T08:03:57Z"
           committed_by: joshua-temple
         - sha: d65b6eb89a485974ee63dba6ba98e6bba27088ab
-          version: v1.0.0-rc.0.hotfix.1
+          version: v0.5.0-rc.10.hotfix.1
           committed_at: "2026-06-26T08:00:44Z"
           committed_by: joshua-temple
         - sha: cd7a5a377f5506bf7768ca0ddfc4322adca3cda1
-          version: v1.0.0-rc.0
+          version: v0.5.0-rc.10
           committed_at: "2026-06-26T07:56:50Z"
           committed_by: joshua-temple
   latest_release:
