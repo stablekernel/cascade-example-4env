@@ -66,17 +66,21 @@ ci:
                     deployed_at: "2026-06-26T07:01:39Z"
                     deployed_by: joshua-temple
         prod:
-            sha: 6162c79a4dbbfc108073f3f484b1f2506aa60ee7
-            version: v1.1.0
-            committed_at: "2026-06-26T06:59:06Z"
+            sha: 237338ad3b0901caa70f659ec8a87ec765283956
+            version: v2.0.0
+            committed_at: "2026-06-26T07:04:40Z"
             committed_by: joshua-temple
             deploys:
                 app:
-                    sha: 6162c79a4dbbfc108073f3f484b1f2506aa60ee7
-                    version: v1.1.0
-                    deployed_at: "2026-06-26T06:59:06Z"
+                    sha: 237338ad3b0901caa70f659ec8a87ec765283956
+                    version: v2.0.0
+                    deployed_at: "2026-06-26T07:04:40Z"
                     deployed_by: joshua-temple
             previous:
+                - sha: 6162c79a4dbbfc108073f3f484b1f2506aa60ee7
+                  version: v1.1.0
+                  committed_at: "2026-06-26T06:59:06Z"
+                  committed_by: joshua-temple
                 - sha: 8db0cf9a57266bdfe65d1c7e9e4bcc109b75cb9c
                   version: v1.0.1
                   committed_at: "2026-06-26T06:56:36Z"
@@ -90,11 +94,15 @@ ci:
                   committed_at: "2026-06-26T06:52:24Z"
                   committed_by: joshua-temple
         release:
-            sha: 6162c79a4dbbfc108073f3f484b1f2506aa60ee7
-            version: v1.1.0
-            committed_at: "2026-06-26T06:59:06Z"
+            sha: 237338ad3b0901caa70f659ec8a87ec765283956
+            version: v2.0.0
+            committed_at: "2026-06-26T07:04:40Z"
             committed_by: joshua-temple
             previous:
+                - sha: 6162c79a4dbbfc108073f3f484b1f2506aa60ee7
+                  version: v1.1.0
+                  committed_at: "2026-06-26T06:59:06Z"
+                  committed_by: joshua-temple
                 - sha: 8db0cf9a57266bdfe65d1c7e9e4bcc109b75cb9c
                   version: v1.0.1
                   committed_at: "2026-06-26T06:52:24Z"
@@ -156,7 +164,7 @@ ci:
                   committed_at: "2026-06-26T06:44:25Z"
                   committed_by: joshua-temple
     latest_release:
-        version: v1.1.0
-        sha: 6162c79a4dbbfc108073f3f484b1f2506aa60ee7
-        released_on: "2026-06-26T06:59:06Z"
+        version: v2.0.0
+        sha: 237338ad3b0901caa70f659ec8a87ec765283956
+        released_on: "2026-06-26T07:04:40Z"
         released_by: joshua-temple
