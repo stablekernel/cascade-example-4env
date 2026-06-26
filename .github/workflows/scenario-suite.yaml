@@ -449,17 +449,25 @@ jobs:
           dev_sha_before="$(state_sha dev)"
           dev_ref_before="$(state_ref dev)"
 
-          # Reset every chain env branch to the trunk tip so the cherry-picks
-          # are deterministic across re-runs. Without this, env/test and
-          # env/staging accumulate prior-run hotfix commits and conflict. The
-          # force-push uses the CASCADE_STATE_TOKEN-authenticated remote (admin
-          # PAT) to bypass branch protection. In-suite git only, no GPG signing.
+          # Reset every chain env branch to its OWN recorded state SHA so the
+          # branch tip matches the cherry-pick base cascade derives from
+          # recorded state.<env>.sha. A finalized hotfix always leaves env/<env>
+          # tip equal to recorded state, and the plan refuses to run when a live
+          # env tip has drifted from recorded state; resetting to the recorded
+          # SHA clears prior-run accumulation deterministically WITHOUT recreating
+          # that divergence. The fresh fixes land on trunk below, past each
+          # recorded base, so they are still absent from these branches and the
+          # cherry-picks proceed. The force-push uses the CASCADE_STATE_TOKEN
+          # remote (admin PAT) to bypass branch protection. In-suite git only,
+          # no GPG signing.
           git fetch origin main --quiet
-          main_sha="$(git rev-parse origin/main)"
           push_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
           for e in test staging; do
-            git push --force "${push_remote}" "${main_sha}:refs/heads/env/${e}" \
-              || { echo "::error::failed to reset env/${e} to main"; exit 1; }
+            e_sha="$(state_sha "${e}")"
+            [ -n "${e_sha}" ] \
+              || { echo "::error::cannot reset env/${e}: recorded state SHA empty"; exit 1; }
+            git push --force "${push_remote}" "${e_sha}:refs/heads/env/${e}" \
+              || { echo "::error::failed to reset env/${e} to recorded state"; exit 1; }
           done
 
           # Land TWO fresh fixes on trunk in run-unique files so the set never
