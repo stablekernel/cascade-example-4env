@@ -1798,8 +1798,12 @@ jobs:
       # manifest is invalid. An invalid-manifest PR (an unknown environment)
       # MUST conclude failure; a valid control PR MUST conclude success. Both
       # are pull_request-triggered (the lane carries no dispatch trigger), so
-      # each is resolved by its PR head branch and registered. Neither PR is
-      # merged - the gate only needs to evaluate the PR head.
+      # each is resolved by its PR head branch and registered. Because 4env
+      # opts into drift_check, each manifest-touching PR ALSO fires the
+      # drift-check lane, so the suite resolves and registers the drift-check
+      # run each PR triggers too (invalid manifest cannot regenerate matching
+      # workflows so its drift-check fails; the comment-only control keeps it
+      # green). Neither PR is merged; the gate only evaluates the PR head.
       - name: Step 10 - validate-manifest PR gate (invalid + valid)
         id: step10
         run: |
@@ -1830,6 +1834,37 @@ jobs:
             return 1
           }
 
+          # Both manifest-touching PRs below also fire the drift-check lane
+          # (4env opts into drift_check), so the suite must account for the
+          # drift-check run each PR triggers. Resolve it the same way: key on
+          # the PR head branch and the pull_request event, poll to completion,
+          # and print the conclusion.
+          wait_for_drift_run() {
+            local head="$1" attempts=15 i=0 run_id="" status conclusion
+            while [ "${i}" -lt "${attempts}" ]; do
+              if [ -z "${run_id}" ]; then
+                run_id="$(gh run list --workflow cascade-drift-check.yaml \
+                  --branch "${head}" --event pull_request \
+                  --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")"
+                if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ]; then
+                  echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
+                fi
+              fi
+              if [ -n "${run_id}" ]; then
+                status="$(gh run view "${run_id}" --json status --jq '.status // "none"')"
+                if [ "${status}" = "completed" ]; then
+                  conclusion="$(gh run view "${run_id}" --json conclusion --jq '.conclusion // "none"')"
+                  echo "${conclusion}"
+                  return 0
+                fi
+              fi
+              i=$((i + 1))
+              sleep 60
+            done
+            echo "::error::timed out waiting for drift-check run on ${head}"
+            return 1
+          }
+
           # Invalid PR: empty a required field on an existing deploy so
           # parse-config reports the manifest invalid (deploys[0].name is
           # required). The change targets .github/manifest.yaml so the path
@@ -1852,6 +1887,17 @@ jobs:
           bad_concl="$(wait_for_validate_run "${bad_branch}")"
           echo "validate_invalid_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "invalid-manifest validate conclusion" "${bad_concl}" "failure"
+          # The same invalid-manifest PR also fires the drift-check lane, which
+          # cannot regenerate matching workflows from an invalid manifest, so it
+          # MUST conclude failure. Resolve and wait for it BEFORE deleting the
+          # branch (a branch delete cancels an in-flight run, and a cancelled
+          # run with no superseder also reds reconcile). The following step
+          # registers it expected failure so the run the probe caused is
+          # accounted for.
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step10-drift-invalid-run-id"
+          bad_drift_concl="$(wait_for_drift_run "${bad_branch}")"
+          echo "drift_invalid_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
+          assert_equal "invalid-manifest drift-check conclusion" "${bad_drift_concl}" "failure"
           gh pr close "${bad_branch}" --delete-branch || true
           # Restore the local checkout so the control PR builds on a clean trunk.
           git checkout -- .github/manifest.yaml 2>/dev/null || true
@@ -1873,6 +1919,15 @@ jobs:
           good_concl="$(wait_for_validate_run "${good_branch}")"
           echo "validate_valid_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "valid-manifest validate conclusion" "${good_concl}" "success"
+          # The valid control PR also fires the drift-check lane, but a
+          # comment-only manifest edit regenerates identical workflows, so it
+          # MUST conclude success. Resolve and wait for it BEFORE deleting the
+          # branch so the delete cannot cancel it, then register it expected
+          # success so the run the probe caused is accounted for.
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step10-drift-valid-run-id"
+          good_drift_concl="$(wait_for_drift_run "${good_branch}")"
+          echo "drift_valid_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
+          assert_equal "valid-manifest drift-check conclusion" "${good_drift_concl}" "success"
           gh pr close "${good_branch}" --delete-branch || true
           git fetch origin main --quiet
           git reset --hard origin/main >/dev/null
@@ -1897,6 +1952,32 @@ jobs:
           run-id: ${{ steps.step10.outputs.validate_valid_run_id }}
           expected-conclusion: success
           reason: step10-validate-valid
+          upload: 'true'
+
+      # NEGATIVE: the invalid-manifest PR's drift-check run MUST conclude
+      # failure (cascade cannot regenerate matching workflows from an invalid
+      # manifest). Registered expected failure so reconcile accounts for the
+      # incidental drift-check run instead of fail-closing on it.
+      - name: Register Step 10 invalid-manifest drift-check run
+        if: steps.step10.outputs.drift_invalid_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step10.outputs.drift_invalid_run_id }}
+          expected-conclusion: failure
+          reason: step10-drift-invalid
+          upload: 'true'
+
+      # The valid control PR's drift-check run MUST conclude success (the
+      # comment-only manifest edit regenerates identical workflows). Registered
+      # so the run is accounted for and a wrongly-failing drift-check reds the
+      # gate.
+      - name: Register Step 10 valid-manifest drift-check run
+        if: steps.step10.outputs.drift_valid_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step10.outputs.drift_valid_run_id }}
+          expected-conclusion: success
+          reason: step10-drift-valid
           upload: 'true'
 
 
