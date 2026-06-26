@@ -2551,7 +2551,7 @@ jobs:
     needs: [probe_concurrency]
     if: ${{ !cancelled() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
       GITHUB_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
@@ -2783,18 +2783,28 @@ jobs:
 
       # ===================================================================
       # Step 13 - hotfix cherry-pick conflict (#334)
-      # 4env is multi-env, so cascade emits cascade-hotfix.yaml. Force a
-      # cherry-pick conflict: pre-load the target env branch with a change to
-      # the SAME file the trunk fix touches (an add/add on the same path),
-      # dispatch a hotfix for that fix, and assert the apply job opens a PR
-      # labeled cascade-hotfix-conflict and halts the chain. On conflict the
-      # apply job emits a warning, opens the conflict PR, and breaks out of the
-      # env loop WITHOUT exiting non-zero, so the dispatched run concludes
-      # success while the chain is halted by the unmerged labeled PR. The
-      # genuine signal is the open cascade-hotfix-conflict PR, not a failed run,
-      # so the run is registered expected success. No downstream finalize fires
-      # because the conflict PR is left unmerged (chain halted for human
-      # resolution).
+      # 4env is multi-env, so cascade emits cascade-hotfix.yaml. The apply job
+      # cuts its hotfix branch from base_<env>, which cascade derives from the
+      # RECORDED state.<env>.sha, not the env/<env> branch tip. The env/<env>
+      # tip is only the PR base. So a real cherry-pick conflict requires the
+      # divergence to live in test's recorded base, not on the branch tip.
+      # This step drives the divergence into recorded state through cascade:
+      #   1. seed a base line on the conflict file and orchestrate it onto dev;
+      #   2. promote dev-to-test so base_test (state.test.sha) carries that line;
+      #   3. drift the SAME file on trunk WITHOUT promoting test, so trunk moves
+      #      past the recorded base;
+      #   4. land the trunk fix on the drifted file. Cherry-picking that fix onto
+      #      base_test conflicts because base_test still holds the base line, not
+      #      the drift the fix was built on.
+      # On conflict the apply job emits a warning, opens a PR labeled
+      # cascade-hotfix-conflict, and breaks out of the env loop WITHOUT exiting
+      # non-zero, so the dispatched run concludes success while the chain is
+      # halted by the unmerged labeled PR. The genuine signal is the open
+      # cascade-hotfix-conflict PR, so the run is registered expected success.
+      # No downstream finalize fires because the conflict PR is left unmerged
+      # (chain halted for human resolution). The seed, promote, and drift runs
+      # are serialized and settled one at a time so concurrent orchestrate runs
+      # never contend on trunk state writes and never get cancelled.
       - name: Step 13 - hotfix cherry-pick conflict
         id: step13
         env:
@@ -2806,43 +2816,51 @@ jobs:
             echo "::error::conflict precondition: state.test version/sha empty"
             exit 1
           fi
-          git fetch origin main --quiet
-          main_sha="$(git rev-parse origin/main)"
-          push_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          # Reset env/test to trunk, then land a conflicting line on the SAME
-          # file path the trunk fix will touch so the cherry-pick cannot apply.
           conflict_file="src/hotfix-conflict-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt"
-          git checkout -B scenario/conflict-envtest-$$ "${main_sha}"
-          mkdir -p src
-          echo "env-branch side of the conflict" > "${conflict_file}"
-          git add "${conflict_file}"
-          git commit --no-gpg-sign -s -m "test: env/test divergent line to force hotfix conflict"
-          git push --force "${push_remote}" "HEAD:refs/heads/env/test" \
-            || { echo "::error::failed to seed conflicting env/test"; exit 1; }
 
-          # Land the trunk fix touching the same file with different content.
-          git fetch origin main --quiet
-          fix_branch="scenario/hotfix-conflict-$(date +%s)-${RANDOM}"
-          git checkout -B "${fix_branch}" origin/main
-          echo "trunk side of the conflict" > "${conflict_file}"
-          git add "${conflict_file}"
-          git commit --no-gpg-sign -s -m "fix: trunk patch that conflicts on env/test"
-          git push origin "${fix_branch}"
-          gh pr create --base main --head "${fix_branch}" \
-            --title "fix: trunk patch that conflicts on env/test" \
-            --body "Trunk fix whose cherry-pick onto env/test must conflict."
-          gh pr merge "${fix_branch}" --squash --delete-branch
-          git fetch origin main --quiet
-          fix_sha="$(git rev-parse origin/main)"
-          # The fix merge also touches src/** and fires orchestrate; let it
-          # settle dev before dispatching the hotfix so the two flows do not
-          # contend on trunk state writes. That superseded orchestrate shares
-          # the workflow + main lane with later registered orchestrate runs and
-          # is intentionally not separately registered.
+          # 1) Land the recorded-base line on trunk and let orchestrate carry it
+          #    onto dev. wait_for_orchestrate_sha returns only when the run (and
+          #    its finalize job) is complete, so dev state is on trunk afterward.
+          base_sha="$(seed_via_pr "${conflict_file}" \
+            "recorded base side of the conflict" \
+            "fix: seed recorded base content for hotfix conflict")"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step13-base-orchestrate-run-id"
+          base_concl="$(wait_for_orchestrate_sha "${base_sha}")"
+          assert_equal "conflict base orchestrate conclusion" "${base_concl}" "success"
+          sync_env_state dev
+
+          # 2) Promote dev-to-test so base_test (state.test.sha) carries the
+          #    base line. test is not promoted again, so this is the base content
+          #    the cherry-pick later fails to apply onto.
+          ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step13-promote-run-id"
+          gh workflow run promote.yaml -f mode=dev-to-test -f dry_run=false \
+            || { echo "::error::failed to dispatch dev-to-test promote"; exit 1; }
+          promote_concl="$(wait_for_dispatched_run promote.yaml "${ts}")"
+          echo "promote_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
+          assert_equal "conflict base promote conclusion" "${promote_concl}" "success"
+          sync_env_state test
+
+          # 3) Drift the SAME file on trunk so the trunk fix below is built on top
+          #    of content that base_test does not carry. test stays at the base
+          #    line; trunk moves on.
+          drift_sha="$(seed_via_pr "${conflict_file}" \
+            "trunk drift ahead of the hotfix fix" \
+            "fix: trunk drift ahead of hotfix conflict")"
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step13-drift-orchestrate-run-id"
+          drift_concl="$(wait_for_orchestrate_sha "${drift_sha}")"
+          assert_equal "conflict drift orchestrate conclusion" "${drift_concl}" "success"
+
+          # 4) Land the conflicting trunk fix on the drifted file. Its cherry-pick
+          #    pre-image is the drift content, which base_test lacks, so the
+          #    cherry-pick onto base_test must conflict.
           export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step13-seed-orchestrate-run-id"
-          seed_concl="$(wait_for_orchestrate_sha "${fix_sha}")"
+          fix_sha="$(seed_via_pr "${conflict_file}" \
+            "trunk side of the conflict" \
+            "fix: trunk patch that conflicts on env/test")"
+          fix_concl="$(wait_for_orchestrate_sha "${fix_sha}")"
           echo "seed_orchestrate_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
-          assert_equal "conflict seed orchestrate conclusion" "${seed_concl}" "success"
+          assert_equal "conflict seed orchestrate conclusion" "${fix_concl}" "success"
 
           # Dispatch the hotfix targeting test; the cherry-pick must conflict.
           ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -2859,10 +2877,16 @@ jobs:
           assert_equal "conflicting hotfix conclusion" "${hotfix_concl}" "success"
 
           # A cascade-hotfix-conflict-labeled PR into env/test must exist and be
-          # unmerged (the chain halted for human resolution).
-          conflict_pr="$(gh pr list --base env/test --state open \
-            --label cascade-hotfix-conflict \
-            --json number --jq 'sort_by(.number) | last | .number' 2>/dev/null || echo "")"
+          # unmerged (the chain halted for human resolution). The apply job opens
+          # it as the run completes, so poll a bounded window for it to appear.
+          conflict_pr=""
+          for _ in $(seq 1 10); do
+            conflict_pr="$(gh pr list --base env/test --state open \
+              --label cascade-hotfix-conflict \
+              --json number --jq 'sort_by(.number) | last | .number' 2>/dev/null || echo "")"
+            [ -n "${conflict_pr}" ] && break
+            sleep 12
+          done
           [ -n "${conflict_pr}" ] \
             || { echo "::error::no cascade-hotfix-conflict PR opened into env/test"; exit 1; }
           echo "conflict resolution PR #${conflict_pr} opened and chain halted"
@@ -2870,6 +2894,15 @@ jobs:
           gh pr close "${conflict_pr}" --delete-branch || true
           summarize "13 hotfix conflict" "PASS" \
             "cherry-pick conflicted; conflict PR opened; chain halted"
+
+      - name: Register Step 13 promote dev-to-test run
+        if: steps.step13.outputs.promote_run_id != ''
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.step13.outputs.promote_run_id }}
+          expected-conclusion: success
+          reason: step13-promote-dev-to-test
+          upload: 'true'
 
       - name: Register Step 13 seed orchestrate run
         if: steps.step13.outputs.seed_orchestrate_run_id != ''
