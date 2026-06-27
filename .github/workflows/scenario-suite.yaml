@@ -614,6 +614,11 @@ jobs:
           # each, watch it to a success conclusion, and emit its run id so the
           # following register-run steps record both in the reconcile ledger. There
           # is NO env-branch gate workflow in this repo, so no gate run to resolve.
+          # Anchor to the hotfix dispatch time so each finalize run is resolved by
+          # identity (the earliest pull_request run on the PR head created at or
+          # after the dispatch), never a stale prior run on a recycled hotfix
+          # branch under concurrent fleet load.
+          hotfix_since="${{ steps.hotfix_multi_seed.outputs.dispatch_ts }}"
           for e in test staging; do
             pr_head="$(gh pr list --base "env/${e}" --state all --label cascade-hotfix \
               --json number,headRefName --jq 'sort_by(.number) | last | .headRefName' \
@@ -621,12 +626,15 @@ jobs:
             [ -n "${pr_head}" ] \
               || { echo "::error::no merged cascade-hotfix PR found into env/${e}"; exit 1; }
             finalize_run_id=""
-            for _ in $(seq 1 15); do
+            for _ in $(seq 1 40); do
               finalize_run_id="$(gh run list --workflow=cascade-hotfix.yaml \
                 --branch "${pr_head}" --event pull_request \
-                --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")"
+                --json databaseId,createdAt 2>/dev/null \
+                | jq -r --arg since "${hotfix_since}" \
+                    '[.[] | select(.createdAt >= $since)] | sort_by(.createdAt) | .[0].databaseId // empty' \
+                    2>/dev/null || echo "")"
               [ -n "${finalize_run_id}" ] && break
-              sleep 60
+              sleep 30
             done
             [ -n "${finalize_run_id}" ] \
               || { echo "::error::no pull_request Cascade Hotfix finalize run for env/${e} head ${pr_head}"; exit 1; }
@@ -1239,7 +1247,7 @@ jobs:
     name: Probe drift-check PR gate
     needs: [open-window]
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
       GITHUB_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
@@ -1523,12 +1531,21 @@ jobs:
           # fires on pull_request, so key on the head branch and the
           # pull_request event, poll to completion, and print the conclusion.
           wait_for_drift_run() {
-            local head="$1" attempts=15 i=0 run_id="" status conclusion
+            local head="$1" since="$2" attempts=40 i=0 run_id="" status conclusion
             while [ "${i}" -lt "${attempts}" ]; do
               if [ -z "${run_id}" ]; then
+                # Resolve by identity, not position: among the pull_request runs
+                # on this head branch, take the EARLIEST created at or after the
+                # moment this probe opened its PR. That excludes any stale prior
+                # run on a recycled branch under concurrent fleet load, and an
+                # empty list just means the run has not appeared yet, so keep
+                # polling rather than failing fast.
                 run_id="$(gh run list --workflow cascade-drift-check.yaml \
                   --branch "${head}" --event pull_request \
-                  --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")"
+                  --json databaseId,createdAt 2>/dev/null \
+                  | jq -r --arg since "${since}" \
+                      '[.[] | select(.createdAt >= $since)] | sort_by(.createdAt) | .[0].databaseId // empty' \
+                      2>/dev/null || echo "")"
                 if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ]; then
                   echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
                 fi
@@ -1542,7 +1559,7 @@ jobs:
                 fi
               fi
               i=$((i + 1))
-              sleep 60
+              sleep 30
             done
             echo "::error::timed out waiting for drift-check run on ${head}"
             return 1
@@ -1558,11 +1575,14 @@ jobs:
           git add .github/workflows/orchestrate.yaml
           git commit --no-gpg-sign -s -m "test: perturb generated workflow to diverge drift digest"
           git push origin "${diverged_branch}"
+          # Anchor the run search to now so the resolver keys on the run THIS PR
+          # triggers, never a stale prior run on a recycled head branch.
+          diverged_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh pr create --base main --head "${diverged_branch}" \
             --title "test: drift-check diverged probe" \
             --body "Mutates a generated workflow so the drift gate must fail. Not for merge."
           export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step9-drift-diverged-run-id"
-          diverged_concl="$(wait_for_drift_run "${diverged_branch}")"
+          diverged_concl="$(wait_for_drift_run "${diverged_branch}" "${diverged_since}")"
           echo "drift_diverged_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "diverged drift-check conclusion" "${diverged_concl}" "failure"
 
@@ -1591,11 +1611,12 @@ jobs:
           git add src/drift-clean-probe.txt
           git commit --no-gpg-sign -s -m "test: non-generated change leaves workflows in sync"
           git push origin "${clean_branch}"
+          clean_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh pr create --base main --head "${clean_branch}" \
             --title "test: drift-check clean probe" \
             --body "Touches only a non-generated path so the drift gate must pass. Not for merge."
           export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step9-drift-clean-run-id"
-          clean_concl="$(wait_for_drift_run "${clean_branch}")"
+          clean_concl="$(wait_for_drift_run "${clean_branch}" "${clean_since}")"
           echo "drift_clean_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "clean drift-check conclusion" "${clean_concl}" "success"
           gh pr close "${clean_branch}" --delete-branch || true
@@ -1627,7 +1648,7 @@ jobs:
     name: Probe validate-manifest PR gate
     needs: [open-window]
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     env:
       GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
       GITHUB_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
@@ -1908,12 +1929,19 @@ jobs:
         run: |
           set -euo pipefail
           wait_for_validate_run() {
-            local head="$1" attempts=12 i=0 run_id="" status conclusion
+            local head="$1" since="$2" attempts=40 i=0 run_id="" status conclusion
             while [ "${i}" -lt "${attempts}" ]; do
               if [ -z "${run_id}" ]; then
+                # Resolve by identity, not position (see the drift resolver): take
+                # the EARLIEST pull_request run on this head created at or after
+                # the PR opened, so concurrent fleet load cannot latch a stale run
+                # and an empty list just means the run has not appeared yet.
                 run_id="$(gh run list --workflow cascade-validate.yaml \
                   --branch "${head}" --event pull_request \
-                  --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")"
+                  --json databaseId,createdAt 2>/dev/null \
+                  | jq -r --arg since "${since}" \
+                      '[.[] | select(.createdAt >= $since)] | sort_by(.createdAt) | .[0].databaseId // empty' \
+                      2>/dev/null || echo "")"
                 if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ]; then
                   echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
                 fi
@@ -1939,12 +1967,21 @@ jobs:
           # the PR head branch and the pull_request event, poll to completion,
           # and print the conclusion.
           wait_for_drift_run() {
-            local head="$1" attempts=15 i=0 run_id="" status conclusion
+            local head="$1" since="$2" attempts=40 i=0 run_id="" status conclusion
             while [ "${i}" -lt "${attempts}" ]; do
               if [ -z "${run_id}" ]; then
+                # Resolve by identity, not position: among the pull_request runs
+                # on this head branch, take the EARLIEST created at or after the
+                # moment this probe opened its PR. That excludes any stale prior
+                # run on a recycled branch under concurrent fleet load, and an
+                # empty list just means the run has not appeared yet, so keep
+                # polling rather than failing fast.
                 run_id="$(gh run list --workflow cascade-drift-check.yaml \
                   --branch "${head}" --event pull_request \
-                  --json databaseId --jq '.[0].databaseId // empty' 2>/dev/null || echo "")"
+                  --json databaseId,createdAt 2>/dev/null \
+                  | jq -r --arg since "${since}" \
+                      '[.[] | select(.createdAt >= $since)] | sort_by(.createdAt) | .[0].databaseId // empty' \
+                      2>/dev/null || echo "")"
                 if [ -n "${run_id}" ] && [ -n "${RESOLVED_RUN_ID_FILE:-}" ]; then
                   echo "${run_id}" > "${RESOLVED_RUN_ID_FILE}"
                 fi
@@ -1958,7 +1995,7 @@ jobs:
                 fi
               fi
               i=$((i + 1))
-              sleep 60
+              sleep 30
             done
             echo "::error::timed out waiting for drift-check run on ${head}"
             return 1
@@ -1979,11 +2016,14 @@ jobs:
           git add .github/manifest.yaml
           git commit --no-gpg-sign -s -m "test: break manifest so validate gate must fail"
           git push origin "${bad_branch}"
+          # Anchor both the validate and drift resolvers to the moment this PR
+          # opens, so each keys on the run THIS PR triggers, not a stale one.
+          bad_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh pr create --base main --head "${bad_branch}" \
             --title "test: invalid manifest probe" \
             --body "Breaks the manifest so the validate gate must fail. Not for merge."
           export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step10-validate-invalid-run-id"
-          bad_concl="$(wait_for_validate_run "${bad_branch}")"
+          bad_concl="$(wait_for_validate_run "${bad_branch}" "${bad_since}")"
           echo "validate_invalid_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "invalid-manifest validate conclusion" "${bad_concl}" "failure"
           # The same invalid-manifest PR also fires the drift-check lane, which
@@ -1994,7 +2034,7 @@ jobs:
           # registers it expected failure so the run the probe caused is
           # accounted for.
           export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step10-drift-invalid-run-id"
-          bad_drift_concl="$(wait_for_drift_run "${bad_branch}")"
+          bad_drift_concl="$(wait_for_drift_run "${bad_branch}" "${bad_since}")"
           echo "drift_invalid_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "invalid-manifest drift-check conclusion" "${bad_drift_concl}" "failure"
           gh pr close "${bad_branch}" --delete-branch || true
@@ -2011,11 +2051,12 @@ jobs:
           git add .github/manifest.yaml
           git commit --no-gpg-sign -s -m "test: valid manifest comment leaves validate gate green"
           git push origin "${good_branch}"
+          good_since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           gh pr create --base main --head "${good_branch}" \
             --title "test: valid manifest control" \
             --body "Valid manifest change so the validate gate must pass. Not for merge."
           export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step10-validate-valid-run-id"
-          good_concl="$(wait_for_validate_run "${good_branch}")"
+          good_concl="$(wait_for_validate_run "${good_branch}" "${good_since}")"
           echo "validate_valid_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "valid-manifest validate conclusion" "${good_concl}" "success"
           # The valid control PR also fires the drift-check lane, but a
@@ -2024,7 +2065,7 @@ jobs:
           # branch so the delete cannot cancel it, then register it expected
           # success so the run the probe caused is accounted for.
           export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step10-drift-valid-run-id"
-          good_drift_concl="$(wait_for_drift_run "${good_branch}")"
+          good_drift_concl="$(wait_for_drift_run "${good_branch}" "${good_since}")"
           echo "drift_valid_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "valid-manifest drift-check conclusion" "${good_drift_concl}" "success"
           gh pr close "${good_branch}" --delete-branch || true
