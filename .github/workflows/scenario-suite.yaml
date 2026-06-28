@@ -460,6 +460,148 @@ jobs:
           upload: 'true'
 
       # ---------------------------------------------------------------------
+      # Step 3g - orphan env-branch self-heal preflight. An interrupted hotfix
+      # can leave a standing env/<env> integration branch whose tip no longer
+      # matches the env's recorded state, with NO divergence recorded (the
+      # finalize that records divergence never ran). Before the self-heal a
+      # later hotfix plan failed closed on that stale tip and needed manual
+      # branch surgery. The planner now treats such a branch as an abandoned
+      # orphan - not diverged AND the single-flight gate found no open
+      # resolution PR - and force-resets it back to the recorded base so the
+      # plan proceeds instead of aborting.
+      #
+      # This runs as a NON-MUTATING dry-run dispatch: the dry-run plan reports
+      # the reset decision (branch_reset plus the diagnostic marker) while
+      # exercising the real single-flight PR gate and the real remote env tip,
+      # without finalizing divergence. That keeps test on its linear line for
+      # the Step 3h multi-env hotfix that follows. The reset-and-proceed
+      # mutation itself is covered by the unit suite and the act e2e scenario;
+      # the fleet's job is to prove the self-heal decision survives on real
+      # GitHub against a real orphan branch and a real PR gate.
+      #
+      # The self-heal engages only when the generated cascade-hotfix.yaml plan
+      # step passes --repo, which wires the planner to a real single-flight
+      # checker. Repos whose workflows predate that generator change skip this
+      # step rather than fail closed, so the scenario activates the moment the
+      # workflows are regenerated.
+      # ---------------------------------------------------------------------
+      - name: Step 3g - dispatch orphan self-heal preflight
+        id: orphan_seed
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Gate: the self-heal needs the plan step to run with --repo so the
+          # single-flight gate uses a real checker. Older generated workflows
+          # omit it; skip cleanly until they are regenerated.
+          if ! grep -A8 'cascade hotfix plan' .github/workflows/cascade-hotfix.yaml \
+              | grep -q -- '--repo'; then
+            echo "orphan self-heal not wired (cascade-hotfix.yaml plan lacks --repo); skipping"
+            echo "skipped=true" >> "${GITHUB_OUTPUT}"
+            summarize "3g orphan self-heal" "SKIP" "plan step lacks --repo; regenerate to enable"
+            exit 0
+          fi
+          echo "skipped=false" >> "${GITHUB_OUTPUT}"
+
+          sync_env_state test
+          base_sha="$(state_sha test)"
+          [ -n "${base_sha}" ] || { echo "::error::test has no recorded SHA"; exit 1; }
+          assert_equal "test not diverged before orphan" "$(state_ref test)" ""
+
+          # Land a real trunk fix the dry-run hotfix will reference. It lives
+          # OUTSIDE src/** so the merge does NOT fire orchestrate (no extra run
+          # to reconcile), and it is a descendant of the recorded base so the
+          # plan's no-op ancestry check does not short-circuit before the branch
+          # reconciliation where the self-heal lives.
+          fix_sha="$(seed_via_pr \
+            ".cascade-selfheal-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.txt" \
+            "orphan self-heal fix $(date -u +%FT%TZ)" \
+            "chore: orphan self-heal fix (non-deploy)")"
+          [ -n "${fix_sha}" ] || { echo "::error::could not land self-heal fix on trunk"; exit 1; }
+          [ "${fix_sha}" != "${base_sha}" ] \
+            || { echo "::error::fix sha equals recorded base; cannot prove self-heal"; exit 1; }
+
+          # Manufacture the orphan: force env/test to the fix tip so it leads the
+          # recorded base while state.test stays NOT diverged. That is exactly an
+          # abandoned hotfix integration branch - the population the self-heal
+          # targets. Pushing env/* triggers no workflow in this repo.
+          push_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git push --force "${push_remote}" "${fix_sha}:refs/heads/env/test"
+
+          # Dispatch the hotfix in dry-run. The plan derives the base from the
+          # recorded state, finds env/test ahead with no divergence and (via
+          # --repo) no open resolution PR, and reports the orphan reset rather
+          # than aborting on the stale tip.
+          ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          gh workflow run cascade-hotfix.yaml \
+            -f commit="${fix_sha}" -f target_env=test -f dry_run=true \
+            || { echo "::error::failed to dispatch orphan self-heal hotfix"; exit 1; }
+          {
+            echo "dispatch_ts=${ts}"
+            echo "fix_sha=${fix_sha}"
+            echo "base_sha=${base_sha}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "dispatched dry-run hotfix for test against orphan env/test at ${fix_sha}"
+
+      - name: Step 3g - await self-heal and assert orphan reset
+        id: orphan_assert
+        if: steps.orphan_seed.outputs.skipped == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+        run: |
+          set -euo pipefail
+          export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step3g-hotfix-run-id"
+          conclusion="$(wait_for_dispatched_run cascade-hotfix.yaml \
+            "${{ steps.orphan_seed.outputs.dispatch_ts }}")"
+          run_id="$(cat "${RESOLVED_RUN_ID_FILE}")"
+          echo "hotfix_run_id=${run_id}" >> "${GITHUB_OUTPUT}"
+          # SUCCESS proves the plan did NOT fail closed on the stale env/test
+          # tip; before the self-heal this dispatch aborted with the env-tip
+          # divergence error.
+          assert_equal "orphan self-heal hotfix conclusion" "${conclusion}" "success"
+          # The diagnostic marker is emitted only when the planner resets the
+          # orphan, so it distinguishes a genuine self-heal from a plan that
+          # succeeded for another reason (branch already at base, freshly
+          # created, and so on).
+          log="$(gh run view "${run_id}" --log 2>/dev/null || true)"
+          if printf '%s' "${log}" \
+              | grep -qE "orphan env/test branch was reset to recorded base"; then
+            echo "  ok: self-heal marker present for env/test"
+          else
+            echo "::error::self-heal marker absent; plan did not reset orphan env/test"
+            exit 1
+          fi
+          # Dry-run mutates nothing: state stays not diverged and the recorded
+          # base is unchanged, so Step 3h still finds test on its linear line.
+          sync_env_state test
+          assert_equal "test still not diverged after dry-run" "$(state_ref test)" ""
+          assert_equal "recorded base unchanged" "$(state_sha test)" \
+            "${{ steps.orphan_seed.outputs.base_sha }}"
+          summarize "3g orphan self-heal" "PASS" \
+            "env/test orphan reset to recorded base; hotfix plan proceeded"
+
+      # Restore env/test to its recorded base so the Step 3h reset-and-cherry-
+      # pick starts from a clean baseline; the orphan tip forced above would
+      # otherwise be stale residue for the next hotfix. Runs after the dry-run
+      # completes, so it never races the plan job that inspects the orphan.
+      - name: Step 3g - restore env/test baseline
+        if: steps.orphan_seed.outputs.skipped == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
+        run: |
+          set -euo pipefail
+          reset_env_to_recorded test
+
+      - name: Register Step 3g orphan self-heal hotfix run
+        if: steps.orphan_seed.outputs.skipped == 'false'
+        uses: stablekernel/cascade/.github/actions/register-run@main
+        with:
+          run-id: ${{ steps.orphan_assert.outputs.hotfix_run_id }}
+          expected-conclusion: success
+          reason: step3g-orphan-self-heal-dry-run
+          upload: 'true'
+
+      # ---------------------------------------------------------------------
       # Step 3h - multi-env hotfix: elevate a SET of trunk commits to a
       # MID-chain env. The four-env chain is [dev, test, staging, prod]; a
       # hotfix targeting staging applies the patch set bottom-up to every
