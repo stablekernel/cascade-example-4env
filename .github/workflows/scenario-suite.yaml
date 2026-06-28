@@ -268,6 +268,25 @@ jobs:
           state_ref() {
             cascade status env "$1" --json | jq -r '.state.ref // empty'
           }
+          # Force the remote env/<env> branch tip back to that env's OWN recorded
+          # state.<env>.sha. cascade's contract is that env/<env> tip always
+          # equals recorded state, and the hotfix planner derives its cherry-pick
+          # base from recorded state and fail-closes when a live env tip has
+          # drifted. This repo's env/* branches are shared across the suite's
+          # parallel jobs, so a sibling job's seed can leave a stale tip behind;
+          # resetting to the recorded SHA clears that residue deterministically
+          # WITHOUT recreating any divergence. Requires GH_TOKEN (admin PAT) in
+          # the step env to bypass branch protection. In-suite git only, no GPG.
+          reset_env_to_recorded() {
+            local env="$1" e_sha push_remote
+            git fetch origin main --quiet
+            e_sha="$(state_sha "${env}")"
+            [ -n "${e_sha}" ] \
+              || { echo "::error::cannot reset env/${env}: recorded state SHA empty"; return 1; }
+            push_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            git push --force "${push_remote}" "${e_sha}:refs/heads/env/${env}" \
+              || { echo "::error::failed to reset env/${env} to recorded state"; return 1; }
+          }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
             printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${GITHUB_STEP_SUMMARY}"
@@ -490,17 +509,9 @@ jobs:
           # SHA clears prior-run accumulation deterministically WITHOUT recreating
           # that divergence. The fresh fixes land on trunk below, past each
           # recorded base, so they are still absent from these branches and the
-          # cherry-picks proceed. The force-push uses the CASCADE_STATE_TOKEN
-          # remote (admin PAT) to bypass branch protection. In-suite git only,
-          # no GPG signing.
-          git fetch origin main --quiet
-          push_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          # cherry-picks proceed. See reset_env_to_recorded in the helper block.
           for e in test staging; do
-            e_sha="$(state_sha "${e}")"
-            [ -n "${e_sha}" ] \
-              || { echo "::error::cannot reset env/${e}: recorded state SHA empty"; exit 1; }
-            git push --force "${push_remote}" "${e_sha}:refs/heads/env/${e}" \
-              || { echo "::error::failed to reset env/${e} to recorded state"; exit 1; }
+            reset_env_to_recorded "${e}"
           done
 
           # Land TWO fresh fixes on trunk in run-unique files so the set never
@@ -1463,6 +1474,25 @@ jobs:
           state_ref() {
             cascade status env "$1" --json | jq -r '.state.ref // empty'
           }
+          # Force the remote env/<env> branch tip back to that env's OWN recorded
+          # state.<env>.sha. cascade's contract is that env/<env> tip always
+          # equals recorded state, and the hotfix planner derives its cherry-pick
+          # base from recorded state and fail-closes when a live env tip has
+          # drifted. This repo's env/* branches are shared across the suite's
+          # parallel jobs, so a sibling job's seed can leave a stale tip behind;
+          # resetting to the recorded SHA clears that residue deterministically
+          # WITHOUT recreating any divergence. Requires GH_TOKEN (admin PAT) in
+          # the step env to bypass branch protection. In-suite git only, no GPG.
+          reset_env_to_recorded() {
+            local env="$1" e_sha push_remote
+            git fetch origin main --quiet
+            e_sha="$(state_sha "${env}")"
+            [ -n "${e_sha}" ] \
+              || { echo "::error::cannot reset env/${env}: recorded state SHA empty"; return 1; }
+            push_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            git push --force "${push_remote}" "${e_sha}:refs/heads/env/${env}" \
+              || { echo "::error::failed to reset env/${env} to recorded state"; return 1; }
+          }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
             printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${GITHUB_STEP_SUMMARY}"
@@ -1863,6 +1893,25 @@ jobs:
           # manual rollback, empty on the linear promotion line).
           state_ref() {
             cascade status env "$1" --json | jq -r '.state.ref // empty'
+          }
+          # Force the remote env/<env> branch tip back to that env's OWN recorded
+          # state.<env>.sha. cascade's contract is that env/<env> tip always
+          # equals recorded state, and the hotfix planner derives its cherry-pick
+          # base from recorded state and fail-closes when a live env tip has
+          # drifted. This repo's env/* branches are shared across the suite's
+          # parallel jobs, so a sibling job's seed can leave a stale tip behind;
+          # resetting to the recorded SHA clears that residue deterministically
+          # WITHOUT recreating any divergence. Requires GH_TOKEN (admin PAT) in
+          # the step env to bypass branch protection. In-suite git only, no GPG.
+          reset_env_to_recorded() {
+            local env="$1" e_sha push_remote
+            git fetch origin main --quiet
+            e_sha="$(state_sha "${env}")"
+            [ -n "${e_sha}" ] \
+              || { echo "::error::cannot reset env/${env}: recorded state SHA empty"; return 1; }
+            push_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            git push --force "${push_remote}" "${e_sha}:refs/heads/env/${env}" \
+              || { echo "::error::failed to reset env/${env} to recorded state"; return 1; }
           }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
@@ -2342,6 +2391,25 @@ jobs:
           state_ref() {
             cascade status env "$1" --json | jq -r '.state.ref // empty'
           }
+          # Force the remote env/<env> branch tip back to that env's OWN recorded
+          # state.<env>.sha. cascade's contract is that env/<env> tip always
+          # equals recorded state, and the hotfix planner derives its cherry-pick
+          # base from recorded state and fail-closes when a live env tip has
+          # drifted. This repo's env/* branches are shared across the suite's
+          # parallel jobs, so a sibling job's seed can leave a stale tip behind;
+          # resetting to the recorded SHA clears that residue deterministically
+          # WITHOUT recreating any divergence. Requires GH_TOKEN (admin PAT) in
+          # the step env to bypass branch protection. In-suite git only, no GPG.
+          reset_env_to_recorded() {
+            local env="$1" e_sha push_remote
+            git fetch origin main --quiet
+            e_sha="$(state_sha "${env}")"
+            [ -n "${e_sha}" ] \
+              || { echo "::error::cannot reset env/${env}: recorded state SHA empty"; return 1; }
+            push_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            git push --force "${push_remote}" "${e_sha}:refs/heads/env/${env}" \
+              || { echo "::error::failed to reset env/${env} to recorded state"; return 1; }
+          }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
             printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${GITHUB_STEP_SUMMARY}"
@@ -2689,6 +2757,25 @@ jobs:
           # manual rollback, empty on the linear promotion line).
           state_ref() {
             cascade status env "$1" --json | jq -r '.state.ref // empty'
+          }
+          # Force the remote env/<env> branch tip back to that env's OWN recorded
+          # state.<env>.sha. cascade's contract is that env/<env> tip always
+          # equals recorded state, and the hotfix planner derives its cherry-pick
+          # base from recorded state and fail-closes when a live env tip has
+          # drifted. This repo's env/* branches are shared across the suite's
+          # parallel jobs, so a sibling job's seed can leave a stale tip behind;
+          # resetting to the recorded SHA clears that residue deterministically
+          # WITHOUT recreating any divergence. Requires GH_TOKEN (admin PAT) in
+          # the step env to bypass branch protection. In-suite git only, no GPG.
+          reset_env_to_recorded() {
+            local env="$1" e_sha push_remote
+            git fetch origin main --quiet
+            e_sha="$(state_sha "${env}")"
+            [ -n "${e_sha}" ] \
+              || { echo "::error::cannot reset env/${env}: recorded state SHA empty"; return 1; }
+            push_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            git push --force "${push_remote}" "${e_sha}:refs/heads/env/${env}" \
+              || { echo "::error::failed to reset env/${env} to recorded state"; return 1; }
           }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
@@ -3062,6 +3149,25 @@ jobs:
           state_ref() {
             cascade status env "$1" --json | jq -r '.state.ref // empty'
           }
+          # Force the remote env/<env> branch tip back to that env's OWN recorded
+          # state.<env>.sha. cascade's contract is that env/<env> tip always
+          # equals recorded state, and the hotfix planner derives its cherry-pick
+          # base from recorded state and fail-closes when a live env tip has
+          # drifted. This repo's env/* branches are shared across the suite's
+          # parallel jobs, so a sibling job's seed can leave a stale tip behind;
+          # resetting to the recorded SHA clears that residue deterministically
+          # WITHOUT recreating any divergence. Requires GH_TOKEN (admin PAT) in
+          # the step env to bypass branch protection. In-suite git only, no GPG.
+          reset_env_to_recorded() {
+            local env="$1" e_sha push_remote
+            git fetch origin main --quiet
+            e_sha="$(state_sha "${env}")"
+            [ -n "${e_sha}" ] \
+              || { echo "::error::cannot reset env/${env}: recorded state SHA empty"; return 1; }
+            push_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            git push --force "${push_remote}" "${e_sha}:refs/heads/env/${env}" \
+              || { echo "::error::failed to reset env/${env} to recorded state"; return 1; }
+          }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
             printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${GITHUB_STEP_SUMMARY}"
@@ -3189,6 +3295,15 @@ jobs:
           fix_concl="$(wait_for_orchestrate_sha "${fix_sha}")"
           echo "seed_orchestrate_run_id=$(cat "${RESOLVED_RUN_ID_FILE}")" >> "${GITHUB_OUTPUT}"
           assert_equal "conflict seed orchestrate conclusion" "${fix_concl}" "success"
+
+          # Normalize env/test to its recorded state.test.sha right before the
+          # dispatch so the hotfix preflight finds a clean PR base. env/* are
+          # shared across this suite's parallel jobs, so a sibling lane's Step 1
+          # seed can leave env/test pointing at a stale tip; cascade's planner
+          # fail-closes when env/test has drifted from recorded state. The
+          # conflict is still computed from recorded state vs the cherry-picked
+          # commit, both untouched by this reset, so the scenario is unchanged.
+          reset_env_to_recorded test
 
           # Dispatch the hotfix targeting test; the cherry-pick must conflict.
           ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -3476,6 +3591,25 @@ jobs:
           # manual rollback, empty on the linear promotion line).
           state_ref() {
             cascade status env "$1" --json | jq -r '.state.ref // empty'
+          }
+          # Force the remote env/<env> branch tip back to that env's OWN recorded
+          # state.<env>.sha. cascade's contract is that env/<env> tip always
+          # equals recorded state, and the hotfix planner derives its cherry-pick
+          # base from recorded state and fail-closes when a live env tip has
+          # drifted. This repo's env/* branches are shared across the suite's
+          # parallel jobs, so a sibling job's seed can leave a stale tip behind;
+          # resetting to the recorded SHA clears that residue deterministically
+          # WITHOUT recreating any divergence. Requires GH_TOKEN (admin PAT) in
+          # the step env to bypass branch protection. In-suite git only, no GPG.
+          reset_env_to_recorded() {
+            local env="$1" e_sha push_remote
+            git fetch origin main --quiet
+            e_sha="$(state_sha "${env}")"
+            [ -n "${e_sha}" ] \
+              || { echo "::error::cannot reset env/${env}: recorded state SHA empty"; return 1; }
+            push_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+            git push --force "${push_remote}" "${e_sha}:refs/heads/env/${env}" \
+              || { echo "::error::failed to reset env/${env} to recorded state"; return 1; }
           }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
