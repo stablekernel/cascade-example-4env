@@ -9,7 +9,7 @@ ci:
       - test
       - staging
       - prod
-    cli_version: v0.6.0-dryrun.12
+    cli_version: v0.6.0-dryrun.13
     cli_version_sha: ee53391c97bf84dca2f187d6d57f7383e87a5764
     state_token: ${{ secrets.CASCADE_STATE_TOKEN }}
     manifest_file: .github/manifest.yaml
@@ -58,7 +58,7 @@ ci:
   state:
     dev:
       sha: db32c1400e3d7ce6e6d8f70f34072a21d36e8007
-      version: v1.0.2-rc.1
+      version: v0.6.0-dryrun.13
       committed_at: "2026-06-28T17:23:05Z"
       committed_by: joshua-temple
       deploys:
@@ -69,28 +69,28 @@ ci:
     prod: {}
     staging:
       sha: 19c86421f94093183a2fce7e51e174b2b31f9c36
-      version: v1.0.0-rc.0
+      version: v0.6.0-dryrun.13
       committed_at: "2026-06-28T17:12:16Z"
       committed_by: joshua-temple
       deploys:
         app:
           sha: 19c86421f94093183a2fce7e51e174b2b31f9c36
-          version: v1.0.0-rc.0
+          version: v0.6.0-dryrun.13
           deployed_at: "2026-06-28T17:12:16Z"
           deployed_by: joshua-temple
     test:
       sha: d1324fa4f781958be7dffbcc0e63952fd241361b
-      version: v1.0.1-rc.2
+      version: v0.6.0-dryrun.13
       committed_at: "2026-06-28T17:20:28Z"
       committed_by: joshua-temple
       deploys:
         app:
           sha: d1324fa4f781958be7dffbcc0e63952fd241361b
-          version: v1.0.1-rc.2
+          version: v0.6.0-dryrun.13
           deployed_at: "2026-06-28T17:20:28Z"
           deployed_by: joshua-temple
       previous:
         - sha: 19c86421f94093183a2fce7e51e174b2b31f9c36
-          version: v1.0.0-rc.0
+          version: v0.6.0-dryrun.13
           committed_at: "2026-06-28T17:11:04Z"
           committed_by: joshua-temple
