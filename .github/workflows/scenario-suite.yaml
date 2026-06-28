@@ -287,6 +287,24 @@ jobs:
             git push --force "${push_remote}" "${e_sha}:refs/heads/env/${env}" \
               || { echo "::error::failed to reset env/${env} to recorded state"; return 1; }
           }
+          # Close any open cascade-hotfix / cascade-hotfix-conflict PR before a
+          # hotfix stage dispatches. The generated plan job passes --repo, which
+          # arms the single-flight gate: it aborts a fresh hotfix while an open
+          # hotfix PR already targets the env. A prior run that ended mid-hotfix
+          # can strand such a PR, so close each one and drop its head branch to
+          # normalize state. Scoped to the two hotfix labels; other open PRs are
+          # left untouched.
+          close_open_hotfix_prs() {
+            local label num
+            for label in cascade-hotfix cascade-hotfix-conflict; do
+              for num in $(gh pr list --repo "${GITHUB_REPOSITORY}" --state open \
+                --label "${label}" --json number --jq '.[].number' 2>/dev/null || true); do
+                gh pr close "${num}" --repo "${GITHUB_REPOSITORY}" --delete-branch \
+                  && echo "closed stale ${label} PR #${num}" \
+                  || echo "::warning::could not close ${label} PR #${num}"
+              done
+            done
+          }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
             printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${GITHUB_STEP_SUMMARY}"
@@ -346,6 +364,9 @@ jobs:
           GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
         run: |
           set -euo pipefail
+          # Clear any hotfix PR a crashed prior run stranded so the single-flight
+          # gate does not abort this job's hotfix stages (Step 3g / Step 3h).
+          close_open_hotfix_prs
           gh release list --repo "$GITHUB_REPOSITORY" --limit 200 --json tagName --jq '.[].tagName' \
             | while read -r t; do gh release delete "$t" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag 2>/dev/null || true; done
           git fetch --tags --quiet || true
@@ -1635,6 +1656,24 @@ jobs:
             git push --force "${push_remote}" "${e_sha}:refs/heads/env/${env}" \
               || { echo "::error::failed to reset env/${env} to recorded state"; return 1; }
           }
+          # Close any open cascade-hotfix / cascade-hotfix-conflict PR before a
+          # hotfix stage dispatches. The generated plan job passes --repo, which
+          # arms the single-flight gate: it aborts a fresh hotfix while an open
+          # hotfix PR already targets the env. A prior run that ended mid-hotfix
+          # can strand such a PR, so close each one and drop its head branch to
+          # normalize state. Scoped to the two hotfix labels; other open PRs are
+          # left untouched.
+          close_open_hotfix_prs() {
+            local label num
+            for label in cascade-hotfix cascade-hotfix-conflict; do
+              for num in $(gh pr list --repo "${GITHUB_REPOSITORY}" --state open \
+                --label "${label}" --json number --jq '.[].number' 2>/dev/null || true); do
+                gh pr close "${num}" --repo "${GITHUB_REPOSITORY}" --delete-branch \
+                  && echo "closed stale ${label} PR #${num}" \
+                  || echo "::warning::could not close ${label} PR #${num}"
+              done
+            done
+          }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
             printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${GITHUB_STEP_SUMMARY}"
@@ -2054,6 +2093,24 @@ jobs:
             push_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
             git push --force "${push_remote}" "${e_sha}:refs/heads/env/${env}" \
               || { echo "::error::failed to reset env/${env} to recorded state"; return 1; }
+          }
+          # Close any open cascade-hotfix / cascade-hotfix-conflict PR before a
+          # hotfix stage dispatches. The generated plan job passes --repo, which
+          # arms the single-flight gate: it aborts a fresh hotfix while an open
+          # hotfix PR already targets the env. A prior run that ended mid-hotfix
+          # can strand such a PR, so close each one and drop its head branch to
+          # normalize state. Scoped to the two hotfix labels; other open PRs are
+          # left untouched.
+          close_open_hotfix_prs() {
+            local label num
+            for label in cascade-hotfix cascade-hotfix-conflict; do
+              for num in $(gh pr list --repo "${GITHUB_REPOSITORY}" --state open \
+                --label "${label}" --json number --jq '.[].number' 2>/dev/null || true); do
+                gh pr close "${num}" --repo "${GITHUB_REPOSITORY}" --delete-branch \
+                  && echo "closed stale ${label} PR #${num}" \
+                  || echo "::warning::could not close ${label} PR #${num}"
+              done
+            done
           }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
@@ -2552,6 +2609,24 @@ jobs:
             git push --force "${push_remote}" "${e_sha}:refs/heads/env/${env}" \
               || { echo "::error::failed to reset env/${env} to recorded state"; return 1; }
           }
+          # Close any open cascade-hotfix / cascade-hotfix-conflict PR before a
+          # hotfix stage dispatches. The generated plan job passes --repo, which
+          # arms the single-flight gate: it aborts a fresh hotfix while an open
+          # hotfix PR already targets the env. A prior run that ended mid-hotfix
+          # can strand such a PR, so close each one and drop its head branch to
+          # normalize state. Scoped to the two hotfix labels; other open PRs are
+          # left untouched.
+          close_open_hotfix_prs() {
+            local label num
+            for label in cascade-hotfix cascade-hotfix-conflict; do
+              for num in $(gh pr list --repo "${GITHUB_REPOSITORY}" --state open \
+                --label "${label}" --json number --jq '.[].number' 2>/dev/null || true); do
+                gh pr close "${num}" --repo "${GITHUB_REPOSITORY}" --delete-branch \
+                  && echo "closed stale ${label} PR #${num}" \
+                  || echo "::warning::could not close ${label} PR #${num}"
+              done
+            done
+          }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
             printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${GITHUB_STEP_SUMMARY}"
@@ -2918,6 +2993,24 @@ jobs:
             push_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
             git push --force "${push_remote}" "${e_sha}:refs/heads/env/${env}" \
               || { echo "::error::failed to reset env/${env} to recorded state"; return 1; }
+          }
+          # Close any open cascade-hotfix / cascade-hotfix-conflict PR before a
+          # hotfix stage dispatches. The generated plan job passes --repo, which
+          # arms the single-flight gate: it aborts a fresh hotfix while an open
+          # hotfix PR already targets the env. A prior run that ended mid-hotfix
+          # can strand such a PR, so close each one and drop its head branch to
+          # normalize state. Scoped to the two hotfix labels; other open PRs are
+          # left untouched.
+          close_open_hotfix_prs() {
+            local label num
+            for label in cascade-hotfix cascade-hotfix-conflict; do
+              for num in $(gh pr list --repo "${GITHUB_REPOSITORY}" --state open \
+                --label "${label}" --json number --jq '.[].number' 2>/dev/null || true); do
+                gh pr close "${num}" --repo "${GITHUB_REPOSITORY}" --delete-branch \
+                  && echo "closed stale ${label} PR #${num}" \
+                  || echo "::warning::could not close ${label} PR #${num}"
+              done
+            done
           }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
@@ -3310,6 +3403,24 @@ jobs:
             git push --force "${push_remote}" "${e_sha}:refs/heads/env/${env}" \
               || { echo "::error::failed to reset env/${env} to recorded state"; return 1; }
           }
+          # Close any open cascade-hotfix / cascade-hotfix-conflict PR before a
+          # hotfix stage dispatches. The generated plan job passes --repo, which
+          # arms the single-flight gate: it aborts a fresh hotfix while an open
+          # hotfix PR already targets the env. A prior run that ended mid-hotfix
+          # can strand such a PR, so close each one and drop its head branch to
+          # normalize state. Scoped to the two hotfix labels; other open PRs are
+          # left untouched.
+          close_open_hotfix_prs() {
+            local label num
+            for label in cascade-hotfix cascade-hotfix-conflict; do
+              for num in $(gh pr list --repo "${GITHUB_REPOSITORY}" --state open \
+                --label "${label}" --json number --jq '.[].number' 2>/dev/null || true); do
+                gh pr close "${num}" --repo "${GITHUB_REPOSITORY}" --delete-branch \
+                  && echo "closed stale ${label} PR #${num}" \
+                  || echo "::warning::could not close ${label} PR #${num}"
+              done
+            done
+          }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
             printf '| %s | %s | %s |\n' "$1" "$2" "$3" >> "${GITHUB_STEP_SUMMARY}"
@@ -3445,6 +3556,11 @@ jobs:
           # fail-closes when env/test has drifted from recorded state. The
           # conflict is still computed from recorded state vs the cherry-picked
           # commit, both untouched by this reset, so the scenario is unchanged.
+          # Clear any hotfix PR a crashed prior run stranded so the single-flight
+          # gate does not abort this dispatch. Step 13 closes its own conflict PR
+          # at the end; this guards the cross-run residue.
+          close_open_hotfix_prs
+
           reset_env_to_recorded test
 
           # Dispatch the hotfix targeting test; the cherry-pick must conflict.
@@ -3752,6 +3868,24 @@ jobs:
             push_remote="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
             git push --force "${push_remote}" "${e_sha}:refs/heads/env/${env}" \
               || { echo "::error::failed to reset env/${env} to recorded state"; return 1; }
+          }
+          # Close any open cascade-hotfix / cascade-hotfix-conflict PR before a
+          # hotfix stage dispatches. The generated plan job passes --repo, which
+          # arms the single-flight gate: it aborts a fresh hotfix while an open
+          # hotfix PR already targets the env. A prior run that ended mid-hotfix
+          # can strand such a PR, so close each one and drop its head branch to
+          # normalize state. Scoped to the two hotfix labels; other open PRs are
+          # left untouched.
+          close_open_hotfix_prs() {
+            local label num
+            for label in cascade-hotfix cascade-hotfix-conflict; do
+              for num in $(gh pr list --repo "${GITHUB_REPOSITORY}" --state open \
+                --label "${label}" --json number --jq '.[].number' 2>/dev/null || true); do
+                gh pr close "${num}" --repo "${GITHUB_REPOSITORY}" --delete-branch \
+                  && echo "closed stale ${label} PR #${num}" \
+                  || echo "::warning::could not close ${label} PR #${num}"
+              done
+            done
           }
           # Append a PASS/FAIL row to the job summary table.
           summarize() {
