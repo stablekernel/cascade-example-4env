@@ -61,10 +61,10 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@63732c8e849abd53994e376d4289608b8f9ecfbe # v0.6.0-dryrun.8
+        uses: stablekernel/cascade/.github/actions/setup-cli@260a5c8c9ef6bf3f86364878e479e4649bec7dd0 # v0.6.0-dryrun.9
         with:
           token: ${{ secrets.CASCADE_STATE_TOKEN }}
-          version: v0.6.0-dryrun.8
+          version: v0.6.0-dryrun.9
       - name: Resolve Target
         id: preflight
         env:
@@ -105,10 +105,10 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@63732c8e849abd53994e376d4289608b8f9ecfbe # v0.6.0-dryrun.8
+        uses: stablekernel/cascade/.github/actions/setup-cli@260a5c8c9ef6bf3f86364878e479e4649bec7dd0 # v0.6.0-dryrun.9
         with:
           token: ${{ secrets.CASCADE_STATE_TOKEN }}
-          version: v0.6.0-dryrun.8
+          version: v0.6.0-dryrun.9
       - name: Finalize Rollback
         env:
           GH_TOKEN: ${{ secrets.CASCADE_STATE_TOKEN }}
