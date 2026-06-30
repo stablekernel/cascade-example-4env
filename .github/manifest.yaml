@@ -59,12 +59,12 @@ ci:
     dev:
       sha: dc0aff4ed41f9a7dd4cde8750f584b8905b875ad
       version: v2.0.1-rc.0
-      committed_at: "2026-06-30T09:42:46Z"
+      committed_at: "2026-06-30T09:43:24Z"
       committed_by: joshua-temple
       deploys:
         app:
-          sha: 0e574f1b6f4b0a5c96d725230c77f8bc5067e792
-          deployed_at: "2026-06-30T09:34:05Z"
+          sha: dc0aff4ed41f9a7dd4cde8750f584b8905b875ad
+          deployed_at: "2026-06-30T09:43:24Z"
           deployed_by: joshua-temple
     prod:
       sha: 0e574f1b6f4b0a5c96d725230c77f8bc5067e792
