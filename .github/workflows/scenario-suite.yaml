@@ -57,9 +57,37 @@ jobs:
           echo "reconcile window opened at $WINDOW_START"
 
 
+  repin:
+    name: Self-repin to dispatched rc
+    needs: [open-window]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.CASCADE_STATE_TOKEN }}
+
+      - name: Log cascade version mode
+        run: |
+          if [ -n "${{ inputs.cascade_version }}" ]; then
+            echo "Running against dispatched rc: ${{ inputs.cascade_version }} (sha ${{ inputs.cascade_version_sha }})"
+          else
+            echo "Running against committed defaults (no rc dispatched)"
+          fi
+
+      - name: Self-repin manifest to the dispatched rc
+        uses: stablekernel/cascade/.github/actions/fleet-repin@main
+        with:
+          cascade_version: ${{ inputs.cascade_version }}
+          cascade_version_sha: ${{ inputs.cascade_version_sha }}
+          token: ${{ secrets.CASCADE_STATE_TOKEN }}
+
+
   lifecycle:
     name: Release lifecycle dev to prod
-    needs: [open-window]
+    needs: [repin]
     runs-on: ubuntu-latest
     timeout-minutes: 45
     env:
@@ -88,21 +116,6 @@ jobs:
           if [ -n "${REVALIDATE_SOURCE:-}" ]; then
             echo "Revalidation requested by: ${REVALIDATE_SOURCE}"
           fi
-
-      - name: Log cascade version mode
-        run: |
-          if [ -n "${{ inputs.cascade_version }}" ]; then
-            echo "Running against dispatched rc: ${{ inputs.cascade_version }} (sha ${{ inputs.cascade_version_sha }})"
-          else
-            echo "Running against committed defaults (no rc dispatched)"
-          fi
-
-      - name: Self-repin manifest to the dispatched rc
-        uses: stablekernel/cascade/.github/actions/fleet-repin@main
-        with:
-          cascade_version: ${{ inputs.cascade_version }}
-          cascade_version_sha: ${{ inputs.cascade_version_sha }}
-          token: ${{ secrets.CASCADE_STATE_TOKEN }}
 
       # Shared helpers used by every assertion step. Sourced from $BASH_ENV so the
       # functions are available in later run blocks without re-declaring them.
@@ -1443,7 +1456,7 @@ jobs:
 
   probe_drift:
     name: Probe drift-check PR gate
-    needs: [open-window]
+    needs: [repin]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -1881,7 +1894,7 @@ jobs:
 
   probe_validate:
     name: Probe validate-manifest PR gate
-    needs: [open-window]
+    needs: [repin]
     runs-on: ubuntu-latest
     timeout-minutes: 60
     env:
@@ -4108,7 +4121,7 @@ jobs:
   # failed, so the full window is always enumerated.
   reconcile:
     name: Reconcile scenario-window runs
-    needs: [open-window, lifecycle, probe_drift, probe_validate, probe_rollback, probe_concurrency, probe_hotfix_conflict, probe_merge_queue]
+    needs: [open-window, repin, lifecycle, probe_drift, probe_validate, probe_rollback, probe_concurrency, probe_hotfix_conflict, probe_merge_queue]
     if: always()
     uses: stablekernel/cascade/.github/workflows/fleet-reconcile.yaml@main
     permissions:
