@@ -25,9 +25,9 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@308fd8ae1beaf5bdfca0820d78028bb38589b9e4 # v0.8.0-rc.5
+        uses: stablekernel/cascade/.github/actions/setup-cli@daa9b93ec49025c22735145d6d78ff4afd14933d # v0.8.1-dryrun.28
         with:
-          version: v0.8.0-rc.5
+          version: v0.8.1-dryrun.28
           token: ${{ github.token }}
       - name: Validate Manifest
         run: |
