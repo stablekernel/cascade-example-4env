@@ -9,8 +9,8 @@ ci:
       - test
       - staging
       - prod
-    cli_version: v0.9.3-rc.0
-    cli_version_sha: ba33a64b96ce6155673e7e73d61e097683a4086c
+    cli_version: v0.10.0-rc.0
+    cli_version_sha: d61d641f4feb12192d9d8eb75b34c414df7da798
     state_token: ${{ secrets.CASCADE_STATE_TOKEN }}
     manifest_file: .github/manifest.yaml
     manifest_key: ci
@@ -58,7 +58,7 @@ ci:
   state:
     dev:
       sha: df69ceed4bfeddd4e26891fa1fa56bc188a66fbb
-      version: v2.0.2-rc.1
+      version: v0.10.0-rc.0
       committed_at: "2026-07-07T00:43:45Z"
       committed_by: joshua-temple
       deploys:
@@ -110,62 +110,62 @@ ci:
           committed_by: joshua-temple
     staging:
       sha: 10e7622235d277331614c75771d7a9cd17cbbff3
-      version: v2.0.0-rc.0
+      version: v0.10.0-rc.0
       committed_at: "2026-07-07T00:29:36Z"
       committed_by: joshua-temple
       deploys:
         app:
           sha: 10e7622235d277331614c75771d7a9cd17cbbff3
-          version: v2.0.0-rc.0
+          version: v0.10.0-rc.0
           deployed_at: "2026-07-07T00:29:36Z"
           deployed_by: joshua-temple
       previous:
         - sha: 83984326b6a2c45039fbd0719b09b8e939702b46
-          version: v1.1.0-rc.0
+          version: v0.10.0-rc.0
           committed_at: "2026-07-07T00:26:19Z"
           committed_by: joshua-temple
         - sha: f558bbbfabc8591ed537ad462cd5f682052bc3c6
-          version: v1.0.1-rc.0
+          version: v0.10.0-rc.0
           committed_at: "2026-07-07T00:19:40Z"
           committed_by: joshua-temple
         - sha: 267e8058ecf373c807779ec0e03245ef752c6e80
-          version: v1.0.0-rc.0.hotfix.2
+          version: v0.10.0-rc.0.hotfix.2
           committed_at: "2026-07-07T00:17:08Z"
           committed_by: joshua-temple
         - sha: 0235a1856742bdc4544983da865c44cd3cbd4571
-          version: v1.0.0-rc.0
+          version: v0.10.0-rc.0
           committed_at: "2026-07-07T00:11:25Z"
           committed_by: joshua-temple
     test:
       sha: 11738f3f78cc72049c7e108f930f82f54d2d7cad
-      version: v2.0.1-rc.2
+      version: v0.10.0-rc.0
       committed_at: "2026-07-07T00:41:10Z"
       committed_by: joshua-temple
       deploys:
         app:
           sha: 11738f3f78cc72049c7e108f930f82f54d2d7cad
-          version: v2.0.1-rc.2
+          version: v0.10.0-rc.0
           deployed_at: "2026-07-07T00:41:10Z"
           deployed_by: joshua-temple
       previous:
         - sha: 10e7622235d277331614c75771d7a9cd17cbbff3
-          version: v2.0.0-rc.0
+          version: v0.10.0-rc.0
           committed_at: "2026-07-07T00:29:36Z"
           committed_by: joshua-temple
         - sha: 83984326b6a2c45039fbd0719b09b8e939702b46
-          version: v1.1.0-rc.0
+          version: v0.10.0-rc.0
           committed_at: "2026-07-07T00:26:19Z"
           committed_by: joshua-temple
         - sha: f558bbbfabc8591ed537ad462cd5f682052bc3c6
-          version: v1.0.1-rc.0
+          version: v0.10.0-rc.0
           committed_at: "2026-07-07T00:19:40Z"
           committed_by: joshua-temple
         - sha: 2f0e45d69c531d352ca51d37fdb0a420390a2795
-          version: v1.0.0-rc.0.hotfix.1
+          version: v0.10.0-rc.0.hotfix.1
           committed_at: "2026-07-07T00:16:36Z"
           committed_by: joshua-temple
         - sha: 0235a1856742bdc4544983da865c44cd3cbd4571
-          version: v1.0.0-rc.0
+          version: v0.10.0-rc.0
           committed_at: "2026-07-07T00:10:19Z"
           committed_by: joshua-temple
   latest_release:
