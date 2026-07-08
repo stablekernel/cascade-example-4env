@@ -58,7 +58,7 @@ ci:
   state:
     dev:
       sha: 60594810da086fd02d728d8c972097300295746b
-      version: v0.12.1-rc.0
+      version: v0.12.0-rc.0
       committed_at: "2026-07-08T07:51:19Z"
       committed_by: joshua-temple
       deploys:
