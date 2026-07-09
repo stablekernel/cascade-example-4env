@@ -57,7 +57,7 @@ ci:
   state:
     dev:
       sha: f3366b0892d8f076b10c7640573aafb500a864c3
-      version: v1.1.1-rc.1
+      version: v0.13.0-dryrun.46
       committed_at: "2026-07-09T11:51:51Z"
       committed_by: joshua-temple
       deploys:
@@ -83,46 +83,46 @@ ci:
       committed_by: joshua-temple
     staging:
       sha: ec43b96ad705b473227478b5e6b696fdca98760d
-      version: v1.0.1-rc.0
+      version: v0.13.0-dryrun.46
       committed_at: "2026-07-09T10:54:49Z"
       committed_by: joshua-temple
       deploys:
         app:
           sha: ec43b96ad705b473227478b5e6b696fdca98760d
-          version: v1.0.1-rc.0
+          version: v0.13.0-dryrun.46
           deployed_at: "2026-07-09T10:54:49Z"
           deployed_by: joshua-temple
       previous:
         - sha: 3f8f2ab83230362c9960a1d388dde072a0422fa1
-          version: v1.0.0-rc.0.hotfix.2
+          version: v0.13.0-dryrun.46.hotfix.2
           committed_at: "2026-07-09T10:42:26Z"
           committed_by: joshua-temple
         - sha: 39f81e5c6012824f6dbf39b34ae8eb2bb11b336e
-          version: v1.0.0-rc.0
+          version: v0.13.0-dryrun.46
           committed_at: "2026-07-09T10:32:58Z"
           committed_by: joshua-temple
     test:
       sha: 6c7f6806c50ddb7e970754d3806480b516b4e0f9
-      version: v1.1.0-rc.3
+      version: v0.13.0-dryrun.46
       committed_at: "2026-07-09T11:34:21Z"
       committed_by: joshua-temple
       deploys:
         app:
           sha: 6c7f6806c50ddb7e970754d3806480b516b4e0f9
-          version: v1.1.0-rc.3
+          version: v0.13.0-dryrun.46
           deployed_at: "2026-07-09T11:34:21Z"
           deployed_by: joshua-temple
       previous:
         - sha: ec43b96ad705b473227478b5e6b696fdca98760d
-          version: v1.0.1-rc.0
+          version: v0.13.0-dryrun.46
           committed_at: "2026-07-09T10:54:49Z"
           committed_by: joshua-temple
         - sha: 8d483edcd3bbf63d03ec8e5a3a878d2e3967fdf9
-          version: v1.0.0-rc.0.hotfix.1
+          version: v0.13.0-dryrun.46.hotfix.1
           committed_at: "2026-07-09T10:36:48Z"
           committed_by: joshua-temple
         - sha: 39f81e5c6012824f6dbf39b34ae8eb2bb11b336e
-          version: v1.0.0-rc.0
+          version: v0.13.0-dryrun.46
           committed_at: "2026-07-09T10:21:46Z"
           committed_by: joshua-temple
   latest_release:
