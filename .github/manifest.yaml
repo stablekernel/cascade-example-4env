@@ -43,7 +43,6 @@ ci:
           - build-app
         types:
           - completed
-      merge_group: {}
     validate_check:
       enabled: true
     merge_queue:
