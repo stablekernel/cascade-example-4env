@@ -72,9 +72,9 @@ ci:
             committed_by: joshua-temple
             deploys:
                 app:
-                    sha: 5158985bcb2a326d3697a70c53caee85766eaf8c
-                    version: v1.1.0
-                    deployed_at: "2026-07-10T09:06:42Z"
+                    sha: 7299909e9c012aa47ce27aca7a822819f2de32d2
+                    version: v1.0.1
+                    deployed_at: "2026-07-10T09:32:19Z"
                     deployed_by: joshua-temple
             previous:
                 - sha: 5158985bcb2a326d3697a70c53caee85766eaf8c
