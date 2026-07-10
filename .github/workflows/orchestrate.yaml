@@ -63,10 +63,10 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@26ce47121f2ec304cb8db77aa43d1c9e799d13e5 # v0.14.0-dryrun.54
+        uses: stablekernel/cascade/.github/actions/setup-cli@0b49ccc9e371d97e7bad2090e8ad96a911021168 # v0.14.0-dryrun.55
         with:
           token: ${{ secrets.CASCADE_STATE_TOKEN }}
-          version: v0.14.0-dryrun.54
+          version: v0.14.0-dryrun.55
       - name: Run Setup
         id: setup
         env:
@@ -155,10 +155,10 @@ jobs:
             echo "_No outputs produced_" >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@26ce47121f2ec304cb8db77aa43d1c9e799d13e5 # v0.14.0-dryrun.54
+        uses: stablekernel/cascade/.github/actions/setup-cli@0b49ccc9e371d97e7bad2090e8ad96a911021168 # v0.14.0-dryrun.55
         with:
           token: ${{ secrets.CASCADE_STATE_TOKEN }}
-          version: v0.14.0-dryrun.54
+          version: v0.14.0-dryrun.55
       - name: Generate Changelog
         id: changelog
         env:
