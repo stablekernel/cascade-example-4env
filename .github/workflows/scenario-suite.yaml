@@ -104,7 +104,7 @@ jobs:
           token: ${{ secrets.CASCADE_STATE_TOKEN }}
 
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@v0.14.1
+        uses: stablekernel/cascade/.github/actions/setup-cli@v0.14.2
         with:
           version: ${{ inputs.cascade_version || 'v0.8.0' }}
 
@@ -1473,7 +1473,7 @@ jobs:
           token: ${{ secrets.CASCADE_STATE_TOKEN }}
 
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@v0.14.1
+        uses: stablekernel/cascade/.github/actions/setup-cli@v0.14.2
         with:
           version: ${{ inputs.cascade_version || 'v0.8.0' }}
 
@@ -1911,7 +1911,7 @@ jobs:
           token: ${{ secrets.CASCADE_STATE_TOKEN }}
 
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@v0.14.1
+        uses: stablekernel/cascade/.github/actions/setup-cli@v0.14.2
         with:
           version: ${{ inputs.cascade_version || 'v0.8.0' }}
 
@@ -2426,7 +2426,7 @@ jobs:
           token: ${{ secrets.CASCADE_STATE_TOKEN }}
 
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@v0.14.1
+        uses: stablekernel/cascade/.github/actions/setup-cli@v0.14.2
         with:
           version: ${{ inputs.cascade_version || 'v0.8.0' }}
 
@@ -2811,7 +2811,7 @@ jobs:
           token: ${{ secrets.CASCADE_STATE_TOKEN }}
 
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@v0.14.1
+        uses: stablekernel/cascade/.github/actions/setup-cli@v0.14.2
         with:
           version: ${{ inputs.cascade_version || 'v0.8.0' }}
 
@@ -3220,7 +3220,7 @@ jobs:
           token: ${{ secrets.CASCADE_STATE_TOKEN }}
 
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@v0.14.1
+        uses: stablekernel/cascade/.github/actions/setup-cli@v0.14.2
         with:
           version: ${{ inputs.cascade_version || 'v0.8.0' }}
 
@@ -3686,7 +3686,7 @@ jobs:
           token: ${{ secrets.CASCADE_STATE_TOKEN }}
 
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@v0.14.1
+        uses: stablekernel/cascade/.github/actions/setup-cli@v0.14.2
         with:
           version: ${{ inputs.cascade_version || 'v0.8.0' }}
 
