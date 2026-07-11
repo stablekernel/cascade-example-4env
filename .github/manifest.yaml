@@ -1,90 +1,100 @@
 ci:
-  config:
-    schema_version: 1
-    trunk_branch: main
-    triggers:
-      - src/**
-    environments:
-      - dev
-      - test
-      - staging
-      - prod
-    cli_version: v0.14.1-dryrun.58
-    cli_version_sha: 33f8865a69ee8c318876539582e15e4ccee3949e
-    state_token: ${{ secrets.CASCADE_STATE_TOKEN }}
-    manifest_file: .github/manifest.yaml
-    manifest_key: ci
-    builds:
-      - name: app
-        workflow: .github/workflows/build-app.yaml
-        triggers: []
-        retries: 2
-      - name: docs
-        workflow: .github/workflows/build-docs.yaml
-        triggers: []
-        optional_depends_on:
-          - app
-    deploys:
-      - name: app
-        workflow: .github/workflows/deploy-app.yaml
-        triggers: []
-        supports_dry_run: true
-        rollout:
-          max_parallel: 2
-          fail_fast: false
-    extra_triggers:
-      schedule:
-        - cron: 0 7 * * *
-      repository_dispatch:
-        types:
-          - cascade-revalidate
-      workflow_run:
-        workflows:
-          - build-app
-        types:
-          - completed
-    validate_check:
-      enabled: true
-    merge_queue:
-      enabled: true
-    drift_check:
-      enabled: true
-      comment: true
-    pin_mode: sha
-    action_pins:
-      actions/checkout: df4cb1c069e1874edd31b4311f1884172cec0e10
-      actions/setup-go: 4a3601121dd01d1626a1e23e37211e3254c1c06c
-  state:
-    dev:
-      sha: b437036e6ceb1e30c1980f84debbff121d142a28
-      version: v1.0.1-rc.0
-      committed_at: "2026-07-11T09:29:12Z"
-      committed_by: joshua-temple
-      deploys:
-        app:
-          sha: b437036e6ceb1e30c1980f84debbff121d142a28
-          deployed_at: "2026-07-11T09:29:12Z"
-          deployed_by: joshua-temple
-    prod: {}
-    staging:
-      sha: a56e8bc033cb2219716d5d392395946f604b96d2
-      version: v1.0.0-rc.0
-      committed_at: "2026-07-11T09:26:39Z"
-      committed_by: joshua-temple
-      deploys:
-        app:
-          sha: a56e8bc033cb2219716d5d392395946f604b96d2
-          version: v1.0.0-rc.0
-          deployed_at: "2026-07-11T09:26:39Z"
-          deployed_by: joshua-temple
-    test:
-      sha: a56e8bc033cb2219716d5d392395946f604b96d2
-      version: v1.0.0-rc.0
-      committed_at: "2026-07-11T09:25:33Z"
-      committed_by: joshua-temple
-      deploys:
-        app:
-          sha: a56e8bc033cb2219716d5d392395946f604b96d2
-          version: v1.0.0-rc.0
-          deployed_at: "2026-07-11T09:25:33Z"
-          deployed_by: joshua-temple
+    config:
+        schema_version: 1
+        trunk_branch: main
+        triggers:
+            - src/**
+        environments:
+            - dev
+            - test
+            - staging
+            - prod
+        cli_version: v0.14.1-dryrun.58
+        cli_version_sha: 33f8865a69ee8c318876539582e15e4ccee3949e
+        state_token: ${{ secrets.CASCADE_STATE_TOKEN }}
+        manifest_file: .github/manifest.yaml
+        manifest_key: ci
+        builds:
+            - name: app
+              workflow: .github/workflows/build-app.yaml
+              triggers: []
+              retries: 2
+            - name: docs
+              workflow: .github/workflows/build-docs.yaml
+              triggers: []
+              optional_depends_on:
+                - app
+        deploys:
+            - name: app
+              workflow: .github/workflows/deploy-app.yaml
+              triggers: []
+              supports_dry_run: true
+              rollout:
+                max_parallel: 2
+                fail_fast: false
+        extra_triggers:
+            schedule:
+                - cron: 0 7 * * *
+            repository_dispatch:
+                types:
+                    - cascade-revalidate
+            workflow_run:
+                workflows:
+                    - build-app
+                types:
+                    - completed
+        validate_check:
+            enabled: true
+        merge_queue:
+            enabled: true
+        drift_check:
+            enabled: true
+            comment: true
+        pin_mode: sha
+        action_pins:
+            actions/checkout: df4cb1c069e1874edd31b4311f1884172cec0e10
+            actions/setup-go: 4a3601121dd01d1626a1e23e37211e3254c1c06c
+    state:
+        dev:
+            sha: b437036e6ceb1e30c1980f84debbff121d142a28
+            version: v1.0.1-rc.0
+            committed_at: "2026-07-11T09:29:12Z"
+            committed_by: joshua-temple
+            deploys:
+                app:
+                    sha: b437036e6ceb1e30c1980f84debbff121d142a28
+                    deployed_at: "2026-07-11T09:29:12Z"
+                    deployed_by: joshua-temple
+        prod: {}
+        staging:
+            sha: a56e8bc033cb2219716d5d392395946f604b96d2
+            version: v1.0.0-rc.0
+            committed_at: "2026-07-11T09:26:39Z"
+            committed_by: joshua-temple
+            deploys:
+                app:
+                    sha: a56e8bc033cb2219716d5d392395946f604b96d2
+                    version: v1.0.0-rc.0
+                    deployed_at: "2026-07-11T09:26:39Z"
+                    deployed_by: joshua-temple
+        test:
+            sha: ac0729964c9c1e3a690c4ae14b2821753236a6b8
+            version: v1.0.0-rc.0.hotfix.1
+            committed_at: "2026-07-11T09:30:32Z"
+            committed_by: joshua-temple
+            deploys:
+                app:
+                    sha: a56e8bc033cb2219716d5d392395946f604b96d2
+                    version: v1.0.0-rc.0
+                    deployed_at: "2026-07-11T09:25:33Z"
+                    deployed_by: joshua-temple
+            ref: env/test
+            base_sha: a56e8bc033cb2219716d5d392395946f604b96d2
+            patches:
+                - b3f0a4d69efc81c1d24324539c2b9ecf1d2eee91
+                - b437036e6ceb1e30c1980f84debbff121d142a28
+            previous:
+                - sha: a56e8bc033cb2219716d5d392395946f604b96d2
+                  version: v1.0.0-rc.0
+                  committed_at: "2026-07-11T09:25:33Z"
+                  committed_by: joshua-temple
