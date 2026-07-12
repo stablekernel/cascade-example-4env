@@ -392,8 +392,8 @@ jobs:
       - name: Verify manifest parses
         run: |
           set -euo pipefail
-          cascade parse-config -c "${MANIFEST}"
-          summarize "parse-config" "PASS" "manifest ${MANIFEST} key ${MANIFEST_KEY} parses"
+          cascade lint -c "${MANIFEST}"
+          summarize "lint" "PASS" "manifest ${MANIFEST} key ${MANIFEST_KEY} parses"
 
       - name: Step 1 - reset and seed dev
         id: step1
@@ -2287,13 +2287,13 @@ jobs:
           }
 
           # Invalid PR: empty a required field on an existing deploy so
-          # parse-config reports the manifest invalid (deploys[0].name is
+          # lint reports the manifest invalid (deploys[0].name is
           # required). The change targets .github/manifest.yaml so the path
           # filter fires the gate.
           git fetch origin main --quiet
           bad_branch="scenario/validate-invalid-$(date +%s)-${RANDOM}"
           git checkout -B "${bad_branch}" origin/main
-          # Blanking the first deploy's required name makes parse-config emit
+          # Blanking the first deploy's required name makes lint emit
           # valid:false with "deploys[0].name is required", so the gate fails
           # deterministically. (An empty env-list entry is accepted, so it must
           # not be used here.)
@@ -3978,7 +3978,7 @@ jobs:
       # queue enabled and a PR added to the queue, which the suite cannot
       # synthesize deterministically across fleet runs without a configured
       # queue. When a merge_group run is present in the scenario window it MUST
-      # conclude success (parse-config + dry-run orchestrate preview, no state
+      # conclude success (lint + dry-run orchestrate preview, no state
       # write); resolve and register it when one is found, and assert it wrote
       # no state. If no merge_group run is present this step is a no-op (the
       # gen-time merge-queue assertion still covers the lane's shape), and the
@@ -4105,8 +4105,8 @@ jobs:
           JOB_KEYS=$(yq -o=json -I=0 '.jobs | keys' .github/workflows/cascade-merge-queue.yaml)
           assert_eq "merge-queue job key" "$JOB_KEYS" '["merge-queue-validate"]'
 
-          grep -q "cascade parse-config" .github/workflows/cascade-merge-queue.yaml || { echo "::error::cascade parse-config not found in merge-queue yaml"; exit 1; }
-          echo "PASS cascade parse-config present"
+          grep -q "cascade lint" .github/workflows/cascade-merge-queue.yaml || { echo "::error::cascade lint not found in merge-queue yaml"; exit 1; }
+          echo "PASS cascade lint present"
 
           grep -q "cascade --dry-run orchestrate setup" .github/workflows/cascade-merge-queue.yaml || { echo "::error::cascade --dry-run orchestrate setup not found in merge-queue yaml"; exit 1; }
           echo "PASS cascade --dry-run orchestrate setup present"
