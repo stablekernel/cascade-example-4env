@@ -3,7 +3,7 @@
 #
 # Merge-queue validation lane (opt-in via merge_queue.enabled).
 # Runs on merge_group against the would-be-trunk commit and validates it
-# with cascade's own logic: a parse-config validity gate plus a dry-run
+# with cascade's own logic: a lint validity gate plus a dry-run
 # orchestrate setup that previews the build/deploy decisions. The lane is
 # read-only (no state writes, releases, or deploys) and reports a status
 # the merge queue can require.
@@ -25,14 +25,14 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@94728b7e8cd84a8aec359e85ee9349c614de0b88 # v0.14.2-rc.0
+        uses: stablekernel/cascade/.github/actions/setup-cli@090e765ba8b485767d60c70f222605fee44fff50 # v0.15.0-rc.0
         with:
-          version: v0.14.2-rc.0
+          version: v0.15.0-rc.0
           token: ${{ github.token }}
       - name: Validate Manifest
         run: |
           MANIFEST_FILE=".github/manifest.yaml"
-          RESULT=$(cascade parse-config --config "$MANIFEST_FILE")
+          RESULT=$(cascade lint --json --config "$MANIFEST_FILE")
           echo "$RESULT"
           VALID=$(echo "$RESULT" | jq -r '.valid // false')
           if [[ "$VALID" != "true" ]]; then

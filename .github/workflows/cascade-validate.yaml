@@ -2,7 +2,7 @@
 # Regenerate with: cascade generate-workflow --config .github/manifest.yaml
 #
 # Manifest-validation PR check (opt-in via validate_check.enabled).
-# Runs `cascade parse-config` against the manifest on pull_request and
+# Runs `cascade lint` against the manifest on pull_request and
 # fails when the configuration is invalid, so a malformed manifest cannot
 # merge. Validates cascade's own configuration only; it does not run the
 # repository's build or test suites.
@@ -24,9 +24,9 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@94728b7e8cd84a8aec359e85ee9349c614de0b88 # v0.14.2-rc.0
+        uses: stablekernel/cascade/.github/actions/setup-cli@090e765ba8b485767d60c70f222605fee44fff50 # v0.15.0-rc.0
         with:
-          version: v0.14.2-rc.0
+          version: v0.15.0-rc.0
           token: ${{ github.token }}
       - name: Validate Manifest
         run: |
@@ -35,10 +35,9 @@ jobs:
             echo "::error::$MANIFEST_FILE not found"
             exit 1
           fi
-          # parse-config reports validity in its JSON output (valid: false on
-          # parse or schema errors) rather than via exit code, so gate on the
-          # parsed result.
-          RESULT=$(cascade parse-config --config "$MANIFEST_FILE")
+          # lint --json reports validity in its JSON output (valid: false on
+          # parse or schema errors), so gate on the parsed result.
+          RESULT=$(cascade lint --json --config "$MANIFEST_FILE")
           echo "$RESULT"
           VALID=$(echo "$RESULT" | jq -r '.valid // false')
           if [[ "$VALID" != "true" ]]; then
