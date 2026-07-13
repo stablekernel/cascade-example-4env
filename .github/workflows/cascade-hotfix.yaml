@@ -81,9 +81,9 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@c25c4de6f1cad95ddb6654bf764ea6aa9e687acd # v0.15.0-rc.1
+        uses: stablekernel/cascade/.github/actions/setup-cli@17599d2f891ac41996936302b4f7b6d7e1359844 # v0.16.0-rc.0
         with:
-          version: v0.15.0-rc.1
+          version: v0.16.0-rc.0
           token: ${{ github.token }}
       - name: Fetch env branches and tags
         run: |
@@ -131,9 +131,9 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@c25c4de6f1cad95ddb6654bf764ea6aa9e687acd # v0.15.0-rc.1
+        uses: stablekernel/cascade/.github/actions/setup-cli@17599d2f891ac41996936302b4f7b6d7e1359844 # v0.16.0-rc.0
         with:
-          version: v0.15.0-rc.1
+          version: v0.16.0-rc.0
           token: ${{ github.token }}
       - name: Fetch env branches and tags
         run: |
@@ -253,9 +253,9 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@c25c4de6f1cad95ddb6654bf764ea6aa9e687acd # v0.15.0-rc.1
+        uses: stablekernel/cascade/.github/actions/setup-cli@17599d2f891ac41996936302b4f7b6d7e1359844 # v0.16.0-rc.0
         with:
-          version: v0.15.0-rc.1
+          version: v0.16.0-rc.0
           token: ${{ github.token }}
       - name: Validate manifest
         run: |
@@ -362,9 +362,9 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@c25c4de6f1cad95ddb6654bf764ea6aa9e687acd # v0.15.0-rc.1
+        uses: stablekernel/cascade/.github/actions/setup-cli@17599d2f891ac41996936302b4f7b6d7e1359844 # v0.16.0-rc.0
         with:
-          version: v0.15.0-rc.1
+          version: v0.16.0-rc.0
           token: ${{ github.token }}
       - name: Fetch env branches and tags
         run: |
