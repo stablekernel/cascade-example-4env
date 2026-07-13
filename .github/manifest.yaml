@@ -66,7 +66,17 @@ ci:
                     deployed_at: "2026-07-13T08:21:26Z"
                     deployed_by: joshua-temple
         prod: {}
-        staging: {}
+        staging:
+            sha: fede660e346ccf5d03aef1c4c31b3c3f5028667e
+            version: v1.0.0-rc.0
+            committed_at: "2026-07-13T08:23:23Z"
+            committed_by: joshua-temple
+            deploys:
+                app:
+                    sha: fede660e346ccf5d03aef1c4c31b3c3f5028667e
+                    version: v1.0.0-rc.0
+                    deployed_at: "2026-07-13T08:23:23Z"
+                    deployed_by: joshua-temple
         test:
             sha: fede660e346ccf5d03aef1c4c31b3c3f5028667e
             version: v1.0.0-rc.0
