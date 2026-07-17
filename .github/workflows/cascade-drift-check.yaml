@@ -23,9 +23,9 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
 
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@708cd047998303cc463701d46233db3e4231d316 # v0.16.3-rc.1
+        uses: stablekernel/cascade/.github/actions/setup-cli@25b365f7f4f16de174120c30cb060b35fa63accd # v0.16.4-rc.0
         with:
-          version: v0.16.3-rc.1
+          version: v0.16.4-rc.0
           token: ${{ github.token }}
 
       - name: Check for workflow drift

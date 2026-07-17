@@ -63,10 +63,10 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@708cd047998303cc463701d46233db3e4231d316 # v0.16.3-rc.1
+        uses: stablekernel/cascade/.github/actions/setup-cli@25b365f7f4f16de174120c30cb060b35fa63accd # v0.16.4-rc.0
         with:
           token: ${{ secrets.CASCADE_STATE_TOKEN }}
-          version: v0.16.3-rc.1
+          version: v0.16.4-rc.0
       - name: Run Setup
         id: setup
         env:
@@ -145,7 +145,7 @@ jobs:
           echo "### Callback Results" >> "$GITHUB_STEP_SUMMARY"
           echo "| Callback | Result | On Failure |" >> "$GITHUB_STEP_SUMMARY"
           echo "|----------|--------|------------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Build (app) | ${{ needs.build-app.result }} | abort |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Build (app) | ${{ (needs.build-app.result == 'success' || needs.build-app-retry-1.result == 'success' || needs.build-app-retry-2.result == 'success') && 'success' || 'failure' }} | abort |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Build (docs) | ${{ needs.build-docs.result }} | abort |" >> "$GITHUB_STEP_SUMMARY"
           echo "| Deploy (app) | ${{ needs.deploy-app.result }} | abort |" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
@@ -155,10 +155,10 @@ jobs:
             echo "_No outputs produced_" >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@708cd047998303cc463701d46233db3e4231d316 # v0.16.3-rc.1
+        uses: stablekernel/cascade/.github/actions/setup-cli@25b365f7f4f16de174120c30cb060b35fa63accd # v0.16.4-rc.0
         with:
           token: ${{ secrets.CASCADE_STATE_TOKEN }}
-          version: v0.16.3-rc.1
+          version: v0.16.4-rc.0
       - name: Generate Changelog
         id: changelog
         env:
@@ -308,7 +308,7 @@ jobs:
           echo "::error::Failed to write state via API after 10 attempts" >&2
           exit 1
       - name: Check for Failures
-        if: contains(fromJSON('["failure", "cancelled"]'), needs.build-app.result) || contains(fromJSON('["failure", "cancelled"]'), needs.build-docs.result) || contains(fromJSON('["failure", "cancelled"]'), needs.deploy-app.result)
+        if: (contains(fromJSON('["failure", "cancelled"]'), needs.build-app.result) && !(needs.build-app-retry-1.result == 'success' || needs.build-app-retry-2.result == 'success')) || contains(fromJSON('["failure", "cancelled"]'), needs.build-docs.result) || contains(fromJSON('["failure", "cancelled"]'), needs.deploy-app.result)
         run: |
           echo "One or more critical callbacks failed or were cancelled"
           exit 1
