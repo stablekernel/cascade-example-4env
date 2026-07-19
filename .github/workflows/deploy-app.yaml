@@ -18,11 +18,24 @@ on:
 jobs:
   run:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Stub deploy-app
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          if [ "${{ vars.FORCE_DEPLOY_FAIL }}" = "true" ]; then
-            echo "FORCE_DEPLOY_FAIL set; simulating a failed deploy"
+          # Read the force-fail flag GLOBALLY from main's tip, not from the
+          # deploy target tree. A rollback re-deploys an OLDER sha whose tree
+          # predates the flag, so a flag checked out at the target sha would be
+          # missing; reading main's tip replicates a repo-wide switch that fails
+          # any deploy regardless of which sha it ships. Absent or unreadable
+          # flag means "do not fail" (contents:read via the run token).
+          force="$(gh api -H 'Accept: application/vnd.github.raw' \
+            "repos/${GITHUB_REPOSITORY}/contents/.cascade-force-deploy-fail?ref=main" \
+            2>/dev/null | tr -d '[:space:]' || true)"
+          if [ "${force}" = "true" ]; then
+            echo "force-deploy-fail flag set on main; simulating a failed deploy"
             exit 1
           fi
           echo "deploy-app environment=${{ inputs.environment }} sha=${{ inputs.sha }} version=${{ inputs.version }} dry_run=${{ inputs.dry_run }}"

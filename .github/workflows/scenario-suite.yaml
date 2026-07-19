@@ -1112,13 +1112,26 @@ jobs:
           # Gap 1: a rollback whose re-deploy FAILS must leave trunk state exactly
           # where it was. prod is currently rolled back to the prior version with
           # ref=rollback/prod (Step 5). Force the deploy stub to exit non-zero via
-          # the FORCE_DEPLOY_FAIL repo variable, dispatch a non-dry-run rollback so
-          # the re-deploy actually runs, and assert the run concludes failure and
-          # prod's version/sha are UNCHANGED (finalize aborts the state write on a
-          # failed in-scope deploy, exactly as the local harness proves).
+          # the .cascade-force-deploy-fail flag on main, dispatch a non-dry-run
+          # rollback so the re-deploy actually runs, and assert the run concludes
+          # failure and prod's version/sha are UNCHANGED (finalize aborts the state
+          # write on a failed in-scope deploy, exactly as the local harness proves).
+          # The flag lives at main's tip (read globally by the deploy stub) so it
+          # forces failure even though the rollback re-deploys an OLDER target sha
+          # whose tree predates the flag; contents:write only, no Variables scope.
           prior_ver="$(state_version prod)"
           prior_sha="$(state_sha prod)"
-          gh variable set FORCE_DEPLOY_FAIL --body true --repo "${GITHUB_REPOSITORY}"
+          flag_content="$(printf 'true\n' | base64 | tr -d '\n')"
+          flag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/.cascade-force-deploy-fail?ref=main" --jq '.sha' 2>/dev/null || true)"
+          if [ -n "${flag_sha}" ]; then
+            gh api -X PUT "repos/${GITHUB_REPOSITORY}/contents/.cascade-force-deploy-fail" \
+              -f message="test: arm force-deploy-fail flag" \
+              -f content="${flag_content}" -f branch=main -f sha="${flag_sha}" >/dev/null
+          else
+            gh api -X PUT "repos/${GITHUB_REPOSITORY}/contents/.cascade-force-deploy-fail" \
+              -f message="test: arm force-deploy-fail flag" \
+              -f content="${flag_content}" -f branch=main >/dev/null
+          fi
           ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           export RESOLVED_RUN_ID_FILE="${RUNNER_TEMP}/step5b-rollback-run-id"
           gh workflow run cascade-rollback.yaml -f environment=prod -f dry_run=false
@@ -1136,15 +1149,21 @@ jobs:
           assert_equal "prod sha unchanged after failed deploy" "${after_sha}" "${prior_sha}"
           summarize "5b failed-deploy rollback" "PASS" "run failed, prod ${after_ver} state write aborted"
 
-      - name: Step 5b cleanup - clear FORCE_DEPLOY_FAIL
+      - name: Step 5b cleanup - clear force-deploy-fail flag
         if: always()
         run: |
           set -euo pipefail
-          # Mandatory: a stranded FORCE_DEPLOY_FAIL=true reds every later deploy in
-          # this and every future fleet run (and the README badge), so reset it on
-          # success AND on failure.
-          gh variable set FORCE_DEPLOY_FAIL --body false --repo "${GITHUB_REPOSITORY}"
-          summarize "5b cleanup" "PASS" "FORCE_DEPLOY_FAIL reset to false"
+          # Mandatory: a stranded flag reds every later deploy in this and every
+          # future fleet run (and the README badge), so clear it on success AND on
+          # failure. Delete the flag file from main's tip; its absence is the
+          # deploy stub's "do not fail" default.
+          flag_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/.cascade-force-deploy-fail?ref=main" --jq '.sha' 2>/dev/null || true)"
+          if [ -n "${flag_sha}" ]; then
+            gh api -X DELETE "repos/${GITHUB_REPOSITORY}/contents/.cascade-force-deploy-fail" \
+              -f message="test: clear force-deploy-fail flag" \
+              -f branch=main -f sha="${flag_sha}" >/dev/null
+          fi
+          summarize "5b cleanup" "PASS" "force-deploy-fail flag cleared"
 
       # NEGATIVE: the rollback whose re-deploy was forced to fail MUST conclude
       # failure (finalize aborts the state write on a failed in-scope deploy).
