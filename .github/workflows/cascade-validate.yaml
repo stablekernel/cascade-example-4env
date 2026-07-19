@@ -24,9 +24,9 @@ jobs:
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@25b365f7f4f16de174120c30cb060b35fa63accd # v0.16.4-rc.0
+        uses: stablekernel/cascade/.github/actions/setup-cli@148cf877cf7f78f0a66fd6407e9c5e06e601c858 # v0.16.5-rc.1
         with:
-          version: v0.16.4-rc.0
+          version: v0.16.5-rc.1
           token: ${{ github.token }}
       - name: Validate Manifest
         run: |
