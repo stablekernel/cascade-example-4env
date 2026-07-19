@@ -1,90 +1,56 @@
 ci:
-  config:
-    schema_version: 1
-    trunk_branch: main
-    triggers:
-      - src/**
-    environments:
-      - dev
-      - test
-      - staging
-      - prod
-    cli_version: v0.16.5-rc.2
-    cli_version_sha: 2231b2bee90615ffb66cdee3a3cfd410720df370
-    state_token: ${{ secrets.CASCADE_STATE_TOKEN }}
-    manifest_file: .github/manifest.yaml
-    manifest_key: ci
-    builds:
-      - name: app
-        workflow: .github/workflows/build-app.yaml
-        triggers: []
-        retries: 2
-      - name: docs
-        workflow: .github/workflows/build-docs.yaml
-        triggers: []
-        optional_depends_on:
-          - app
-    deploys:
-      - name: app
-        workflow: .github/workflows/deploy-app.yaml
-        triggers: []
-        supports_dry_run: true
-        rollout:
-          max_parallel: 2
-          fail_fast: false
-    extra_triggers:
-      schedule:
-        - cron: 0 7 * * *
-      repository_dispatch:
-        types:
-          - cascade-revalidate
-      workflow_run:
-        workflows:
-          - build-app
-        types:
-          - completed
-    validate_check:
-      enabled: true
-    merge_queue:
-      enabled: true
-    drift_check:
-      enabled: true
-      comment: true
-    pin_mode: sha
-    action_pins:
-      actions/checkout: df4cb1c069e1874edd31b4311f1884172cec0e10
-      actions/setup-go: 4a3601121dd01d1626a1e23e37211e3254c1c06c
-  state:
-    dev:
-      sha: 0776cffd1db371527112475d50c4d1c72dbdf19e
-      version: v0.16.5-rc.2
-      committed_at: "2026-07-19T18:29:10Z"
-      committed_by: joshua-temple
-      deploys:
-        app:
-          sha: 0776cffd1db371527112475d50c4d1c72dbdf19e
-          deployed_at: "2026-07-19T18:29:10Z"
-          deployed_by: joshua-temple
-    prod: {}
-    staging:
-      sha: 2d8dbbacf77b0c222e65f7c02a1205f4f71cdf06
-      version: v0.16.5-rc.2
-      committed_at: "2026-07-19T18:06:25Z"
-      committed_by: joshua-temple
-      deploys:
-        app:
-          sha: 2d8dbbacf77b0c222e65f7c02a1205f4f71cdf06
-          version: v0.16.5-rc.2
-          deployed_at: "2026-07-19T18:06:25Z"
-          deployed_by: joshua-temple
-    test:
-      sha: 2d8dbbacf77b0c222e65f7c02a1205f4f71cdf06
-      version: v0.16.5-rc.2
-      committed_at: "2026-07-19T18:05:25Z"
-      committed_by: joshua-temple
-      deploys:
-        app:
-          sha: 2d8dbbacf77b0c222e65f7c02a1205f4f71cdf06
-          version: v0.16.5-rc.2
-          deployed_at: "2026-07-19T18:05:25Z"
-          deployed_by: joshua-temple
+    config:
+        schema_version: 1
+        trunk_branch: main
+        triggers:
+            - src/**
+        environments:
+            - dev
+            - test
+            - staging
+            - prod
+        cli_version: v0.16.5-rc.2
+        cli_version_sha: 2231b2bee90615ffb66cdee3a3cfd410720df370
+        state_token: ${{ secrets.CASCADE_STATE_TOKEN }}
+        manifest_file: .github/manifest.yaml
+        manifest_key: ci
+        builds:
+            - name: app
+              workflow: .github/workflows/build-app.yaml
+              triggers: []
+              retries: 2
+            - name: docs
+              workflow: .github/workflows/build-docs.yaml
+              triggers: []
+              optional_depends_on:
+                - app
+        deploys:
+            - name: app
+              workflow: .github/workflows/deploy-app.yaml
+              triggers: []
+              supports_dry_run: true
+              rollout:
+                max_parallel: 2
+                fail_fast: false
+        extra_triggers:
+            schedule:
+                - cron: 0 7 * * *
+            repository_dispatch:
+                types:
+                    - cascade-revalidate
+            workflow_run:
+                workflows:
+                    - build-app
+                types:
+                    - completed
+        validate_check:
+            enabled: true
+        merge_queue:
+            enabled: true
+        drift_check:
+            enabled: true
+            comment: true
+        pin_mode: sha
+        action_pins:
+            actions/checkout: df4cb1c069e1874edd31b4311f1884172cec0e10
+            actions/setup-go: 4a3601121dd01d1626a1e23e37211e3254c1c06c
