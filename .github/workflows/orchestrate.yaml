@@ -63,10 +63,10 @@ jobs:
         with:
           fetch-depth: 0
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@c17b74089833ecc7b24f2babee7c17f6861b1d43 # v0.16.6-rc.0
+        uses: stablekernel/cascade/.github/actions/setup-cli@82d7a676a50e7a54ad666d0f55277dcf04415cfb # v0.16.6-dryrun.82
         with:
           token: ${{ secrets.CASCADE_STATE_TOKEN }}
-          version: v0.16.6-rc.0
+          version: v0.16.6-dryrun.82
       - name: Run Setup
         id: setup
         env:
@@ -90,7 +90,7 @@ jobs:
   build-app-retry-1:
     name: Build (app) - Retry 1
     needs: [setup, build-app]
-    if: needs.build-app.result == 'failure'
+    if: ${{ !cancelled() && needs.build-app.result == 'failure' }}
     uses: ./.github/workflows/build-app.yaml
     with:
       environment: ${{ github.event.inputs.environment || 'dev' }}
@@ -99,7 +99,7 @@ jobs:
   build-app-retry-2:
     name: Build (app) - Retry 2
     needs: [setup, build-app-retry-1]
-    if: needs.build-app-retry-1.result == 'failure'
+    if: ${{ !cancelled() && needs.build-app-retry-1.result == 'failure' }}
     uses: ./.github/workflows/build-app.yaml
     with:
       environment: ${{ github.event.inputs.environment || 'dev' }}
@@ -155,10 +155,10 @@ jobs:
             echo "_No outputs produced_" >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Setup CLI
-        uses: stablekernel/cascade/.github/actions/setup-cli@c17b74089833ecc7b24f2babee7c17f6861b1d43 # v0.16.6-rc.0
+        uses: stablekernel/cascade/.github/actions/setup-cli@82d7a676a50e7a54ad666d0f55277dcf04415cfb # v0.16.6-dryrun.82
         with:
           token: ${{ secrets.CASCADE_STATE_TOKEN }}
-          version: v0.16.6-rc.0
+          version: v0.16.6-dryrun.82
       - name: Generate Changelog
         id: changelog
         env:
