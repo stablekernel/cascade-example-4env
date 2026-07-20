@@ -4230,13 +4230,21 @@ jobs:
           }
 
           RETRY1_IF=$(yq '.jobs."build-app-retry-1".if' .github/workflows/orchestrate.yaml)
-          assert_eq "build-app-retry-1.if" "$RETRY1_IF" '${{ !cancelled() && needs.build-app.result == '\''failure'\'' }}'
+          echo "$RETRY1_IF" | grep -q '!cancelled()' \
+            || { echo "::error::FAIL build-app-retry-1.if must carry the !cancelled() status gate, got: $RETRY1_IF"; exit 1; }
+          echo "$RETRY1_IF" | grep -q "needs.build-app.result == 'failure'" \
+            || { echo "::error::FAIL build-app-retry-1.if must re-invoke on build-app failure, got: $RETRY1_IF"; exit 1; }
+          echo "PASS build-app-retry-1.if"
 
           RETRY1_NEEDS=$(yq -o=json -I=0 '.jobs."build-app-retry-1".needs' .github/workflows/orchestrate.yaml)
           assert_eq "build-app-retry-1.needs" "$RETRY1_NEEDS" '["setup","build-app"]'
 
           RETRY2_IF=$(yq '.jobs."build-app-retry-2".if' .github/workflows/orchestrate.yaml)
-          assert_eq "build-app-retry-2.if" "$RETRY2_IF" '${{ !cancelled() && needs.build-app-retry-1.result == '\''failure'\'' }}'
+          echo "$RETRY2_IF" | grep -q '!cancelled()' \
+            || { echo "::error::FAIL build-app-retry-2.if must carry the !cancelled() status gate, got: $RETRY2_IF"; exit 1; }
+          echo "$RETRY2_IF" | grep -q "needs.build-app-retry-1.result == 'failure'" \
+            || { echo "::error::FAIL build-app-retry-2.if must re-invoke on retry-1 failure, got: $RETRY2_IF"; exit 1; }
+          echo "PASS build-app-retry-2.if"
 
           RETRY2_NEEDS=$(yq -o=json -I=0 '.jobs."build-app-retry-2".needs' .github/workflows/orchestrate.yaml)
           assert_eq "build-app-retry-2.needs" "$RETRY2_NEEDS" '["setup","build-app-retry-1"]'
