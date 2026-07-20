@@ -233,6 +233,26 @@ jobs:
               i=$((i + 1))
               sleep 60
             done
+            # GitHub push events are best-effort and can be dropped, so a
+            # push-keyed orchestrate run may never be created for this merge
+            # (observed on a heavy 4env fleet run: zero orchestrate runs for the
+            # seed head_sha, so this wait timed out). When no run appeared
+            # in-window (run_id is still empty), self-heal by dispatching
+            # orchestrate against main, which already carries the merge, then
+            # wait on that dispatched run. A run that appeared but has not yet
+            # completed is NOT redispatched; that path falls through to the
+            # timeout error below.
+            if [ -z "${run_id}" ]; then
+              local since
+              since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo "::warning::no push-triggered orchestrate run for ${merge_sha} after ${attempts} polls; dispatching orchestrate as fallback" >&2
+              if ! gh workflow run orchestrate.yaml --ref main >&2; then
+                echo "::error::fallback dispatch of orchestrate failed for ${merge_sha}"
+                return 1
+              fi
+              wait_for_dispatched_run orchestrate.yaml "${since}"
+              return $?
+            fi
             echo "::error::timed out waiting for orchestrate run for ${merge_sha}"
             return 1
           }
@@ -1621,6 +1641,26 @@ jobs:
               i=$((i + 1))
               sleep 60
             done
+            # GitHub push events are best-effort and can be dropped, so a
+            # push-keyed orchestrate run may never be created for this merge
+            # (observed on a heavy 4env fleet run: zero orchestrate runs for the
+            # seed head_sha, so this wait timed out). When no run appeared
+            # in-window (run_id is still empty), self-heal by dispatching
+            # orchestrate against main, which already carries the merge, then
+            # wait on that dispatched run. A run that appeared but has not yet
+            # completed is NOT redispatched; that path falls through to the
+            # timeout error below.
+            if [ -z "${run_id}" ]; then
+              local since
+              since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo "::warning::no push-triggered orchestrate run for ${merge_sha} after ${attempts} polls; dispatching orchestrate as fallback" >&2
+              if ! gh workflow run orchestrate.yaml --ref main >&2; then
+                echo "::error::fallback dispatch of orchestrate failed for ${merge_sha}"
+                return 1
+              fi
+              wait_for_dispatched_run orchestrate.yaml "${since}"
+              return $?
+            fi
             echo "::error::timed out waiting for orchestrate run for ${merge_sha}"
             return 1
           }
@@ -2059,6 +2099,26 @@ jobs:
               i=$((i + 1))
               sleep 60
             done
+            # GitHub push events are best-effort and can be dropped, so a
+            # push-keyed orchestrate run may never be created for this merge
+            # (observed on a heavy 4env fleet run: zero orchestrate runs for the
+            # seed head_sha, so this wait timed out). When no run appeared
+            # in-window (run_id is still empty), self-heal by dispatching
+            # orchestrate against main, which already carries the merge, then
+            # wait on that dispatched run. A run that appeared but has not yet
+            # completed is NOT redispatched; that path falls through to the
+            # timeout error below.
+            if [ -z "${run_id}" ]; then
+              local since
+              since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo "::warning::no push-triggered orchestrate run for ${merge_sha} after ${attempts} polls; dispatching orchestrate as fallback" >&2
+              if ! gh workflow run orchestrate.yaml --ref main >&2; then
+                echo "::error::fallback dispatch of orchestrate failed for ${merge_sha}"
+                return 1
+              fi
+              wait_for_dispatched_run orchestrate.yaml "${since}"
+              return $?
+            fi
             echo "::error::timed out waiting for orchestrate run for ${merge_sha}"
             return 1
           }
@@ -2574,6 +2634,26 @@ jobs:
               i=$((i + 1))
               sleep 60
             done
+            # GitHub push events are best-effort and can be dropped, so a
+            # push-keyed orchestrate run may never be created for this merge
+            # (observed on a heavy 4env fleet run: zero orchestrate runs for the
+            # seed head_sha, so this wait timed out). When no run appeared
+            # in-window (run_id is still empty), self-heal by dispatching
+            # orchestrate against main, which already carries the merge, then
+            # wait on that dispatched run. A run that appeared but has not yet
+            # completed is NOT redispatched; that path falls through to the
+            # timeout error below.
+            if [ -z "${run_id}" ]; then
+              local since
+              since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo "::warning::no push-triggered orchestrate run for ${merge_sha} after ${attempts} polls; dispatching orchestrate as fallback" >&2
+              if ! gh workflow run orchestrate.yaml --ref main >&2; then
+                echo "::error::fallback dispatch of orchestrate failed for ${merge_sha}"
+                return 1
+              fi
+              wait_for_dispatched_run orchestrate.yaml "${since}"
+              return $?
+            fi
             echo "::error::timed out waiting for orchestrate run for ${merge_sha}"
             return 1
           }
@@ -2959,6 +3039,26 @@ jobs:
               i=$((i + 1))
               sleep 60
             done
+            # GitHub push events are best-effort and can be dropped, so a
+            # push-keyed orchestrate run may never be created for this merge
+            # (observed on a heavy 4env fleet run: zero orchestrate runs for the
+            # seed head_sha, so this wait timed out). When no run appeared
+            # in-window (run_id is still empty), self-heal by dispatching
+            # orchestrate against main, which already carries the merge, then
+            # wait on that dispatched run. A run that appeared but has not yet
+            # completed is NOT redispatched; that path falls through to the
+            # timeout error below.
+            if [ -z "${run_id}" ]; then
+              local since
+              since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo "::warning::no push-triggered orchestrate run for ${merge_sha} after ${attempts} polls; dispatching orchestrate as fallback" >&2
+              if ! gh workflow run orchestrate.yaml --ref main >&2; then
+                echo "::error::fallback dispatch of orchestrate failed for ${merge_sha}"
+                return 1
+              fi
+              wait_for_dispatched_run orchestrate.yaml "${since}"
+              return $?
+            fi
             echo "::error::timed out waiting for orchestrate run for ${merge_sha}"
             return 1
           }
@@ -3368,6 +3468,26 @@ jobs:
               i=$((i + 1))
               sleep 60
             done
+            # GitHub push events are best-effort and can be dropped, so a
+            # push-keyed orchestrate run may never be created for this merge
+            # (observed on a heavy 4env fleet run: zero orchestrate runs for the
+            # seed head_sha, so this wait timed out). When no run appeared
+            # in-window (run_id is still empty), self-heal by dispatching
+            # orchestrate against main, which already carries the merge, then
+            # wait on that dispatched run. A run that appeared but has not yet
+            # completed is NOT redispatched; that path falls through to the
+            # timeout error below.
+            if [ -z "${run_id}" ]; then
+              local since
+              since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo "::warning::no push-triggered orchestrate run for ${merge_sha} after ${attempts} polls; dispatching orchestrate as fallback" >&2
+              if ! gh workflow run orchestrate.yaml --ref main >&2; then
+                echo "::error::fallback dispatch of orchestrate failed for ${merge_sha}"
+                return 1
+              fi
+              wait_for_dispatched_run orchestrate.yaml "${since}"
+              return $?
+            fi
             echo "::error::timed out waiting for orchestrate run for ${merge_sha}"
             return 1
           }
@@ -3834,6 +3954,26 @@ jobs:
               i=$((i + 1))
               sleep 60
             done
+            # GitHub push events are best-effort and can be dropped, so a
+            # push-keyed orchestrate run may never be created for this merge
+            # (observed on a heavy 4env fleet run: zero orchestrate runs for the
+            # seed head_sha, so this wait timed out). When no run appeared
+            # in-window (run_id is still empty), self-heal by dispatching
+            # orchestrate against main, which already carries the merge, then
+            # wait on that dispatched run. A run that appeared but has not yet
+            # completed is NOT redispatched; that path falls through to the
+            # timeout error below.
+            if [ -z "${run_id}" ]; then
+              local since
+              since="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              echo "::warning::no push-triggered orchestrate run for ${merge_sha} after ${attempts} polls; dispatching orchestrate as fallback" >&2
+              if ! gh workflow run orchestrate.yaml --ref main >&2; then
+                echo "::error::fallback dispatch of orchestrate failed for ${merge_sha}"
+                return 1
+              fi
+              wait_for_dispatched_run orchestrate.yaml "${since}"
+              return $?
+            fi
             echo "::error::timed out waiting for orchestrate run for ${merge_sha}"
             return 1
           }
