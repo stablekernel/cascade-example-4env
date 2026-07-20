@@ -4230,13 +4230,13 @@ jobs:
           }
 
           RETRY1_IF=$(yq '.jobs."build-app-retry-1".if' .github/workflows/orchestrate.yaml)
-          assert_eq "build-app-retry-1.if" "$RETRY1_IF" "needs.build-app.result == 'failure'"
+          assert_eq "build-app-retry-1.if" "$RETRY1_IF" '${{ !cancelled() && needs.build-app.result == '\''failure'\'' }}'
 
           RETRY1_NEEDS=$(yq -o=json -I=0 '.jobs."build-app-retry-1".needs' .github/workflows/orchestrate.yaml)
           assert_eq "build-app-retry-1.needs" "$RETRY1_NEEDS" '["setup","build-app"]'
 
           RETRY2_IF=$(yq '.jobs."build-app-retry-2".if' .github/workflows/orchestrate.yaml)
-          assert_eq "build-app-retry-2.if" "$RETRY2_IF" "needs.build-app-retry-1.result == 'failure'"
+          assert_eq "build-app-retry-2.if" "$RETRY2_IF" '${{ !cancelled() && needs.build-app-retry-1.result == '\''failure'\'' }}'
 
           RETRY2_NEEDS=$(yq -o=json -I=0 '.jobs."build-app-retry-2".needs' .github/workflows/orchestrate.yaml)
           assert_eq "build-app-retry-2.needs" "$RETRY2_NEEDS" '["setup","build-app-retry-1"]'
