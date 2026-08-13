@@ -58,12 +58,12 @@ ci:
     dev:
       sha: 8c770803f2790a0d68993ac0c61d3e363c96c2ef
       version: v2.0.21-rc.3
-      committed_at: "2026-08-13T09:35:40Z"
+      committed_at: "2026-08-13T09:36:16Z"
       committed_by: joshua-temple
       deploys:
         app:
-          sha: c03ba795122fc1ab07195f0b0dba4cc92455b3bf
-          deployed_at: "2026-08-13T07:34:25Z"
+          sha: 8c770803f2790a0d68993ac0c61d3e363c96c2ef
+          deployed_at: "2026-08-13T09:36:16Z"
           deployed_by: joshua-temple
     prod:
       sha: 6676b747446d8de6bc30f3aaef45ef6fff4d766d
