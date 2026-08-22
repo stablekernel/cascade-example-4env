@@ -40,3 +40,5 @@ jobs:
           fi
           echo "deploy-app environment=${{ inputs.environment }} sha=${{ inputs.sha }} version=${{ inputs.version }} dry_run=${{ inputs.dry_run }}"
           sleep 2
+
+# drift probe 2026-06-25T06:08:25WZ
