@@ -25,7 +25,7 @@ ci:
         optional_depends_on:
           - app
     deploys:
-      - name: app
+      - name: ""
         workflow: .github/workflows/deploy-app.yaml
         triggers: []
         supports_dry_run: true
