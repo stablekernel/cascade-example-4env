@@ -56,14 +56,14 @@ ci:
       actions/setup-go: 4a3601121dd01d1626a1e23e37211e3254c1c06c
   state:
     dev:
-      sha: ed2884b5bd99e9b9bce42f66f75ac02d40cef5a4
-      version: v2.0.59-rc.0
-      committed_at: "2026-09-20T09:26:46Z"
+      sha: 44aab9a11187fd85131b23ea5de811421507ab2f
+      version: v2.0.59-rc.1
+      committed_at: "2026-09-20T09:27:54Z"
       committed_by: joshua-temple
       deploys:
         app:
-          sha: ed2884b5bd99e9b9bce42f66f75ac02d40cef5a4
-          deployed_at: "2026-09-20T09:26:46Z"
+          sha: 44aab9a11187fd85131b23ea5de811421507ab2f
+          deployed_at: "2026-09-20T09:27:54Z"
           deployed_by: joshua-temple
     prod:
       sha: 6676b747446d8de6bc30f3aaef45ef6fff4d766d
