@@ -1,1 +1,5 @@
+<<<<<<< HEAD
 recorded base side of the conflict
+=======
+trunk side of the conflict
+>>>>>>> 2f0d1a6b (fix: trunk patch that conflicts on env/test)
