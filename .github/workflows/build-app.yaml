@@ -3,7 +3,7 @@ on:
   workflow_call:
     inputs:
       environment:
-        required: false
+        required: true
         type: string
       sha:
         required: false
@@ -14,6 +14,9 @@ on:
       target_env:
         required: false
         type: string
+      release_channel:
+        required: true
+        type: string
 jobs:
   run:
     runs-on: ubuntu-latest
@@ -22,3 +25,12 @@ jobs:
         run: |
           echo "build-app environment=${{ inputs.environment }} sha=${{ inputs.sha }} version=${{ inputs.version }} target_env=${{ inputs.target_env }}"
           sleep 2
+      # Fleet probe for the hotfix build callback contract: the merged-hotfix
+      # build job must receive both the resolved target environment and the
+      # manifest's operator-declared release_channel literal. The scenario
+      # suite greps the running job's log for the RESOLVED marker line, which
+      # cannot appear in this source file (the placeholders below are unrendered
+      # here) and is never command-echoed (no set -x in this step).
+      - name: Hotfix build input probe
+        run: |
+          echo "hotfix-probe environment=${{ inputs.environment }} release_channel=${{ inputs.release_channel }}"

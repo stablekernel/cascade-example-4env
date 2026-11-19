@@ -86,6 +86,7 @@ jobs:
     with:
       environment: ${{ github.event.inputs.environment || 'dev' }}
       sha: ${{ needs.setup.outputs.head_sha }}
+      release_channel: 'hotfix-fleet-probe'
 
   build-app-retry-1:
     name: Build (app) - Retry 1
@@ -95,6 +96,7 @@ jobs:
     with:
       environment: ${{ github.event.inputs.environment || 'dev' }}
       sha: ${{ needs.setup.outputs.head_sha }}
+      release_channel: 'hotfix-fleet-probe'
 
   build-app-retry-2:
     name: Build (app) - Retry 2
@@ -104,6 +106,7 @@ jobs:
     with:
       environment: ${{ github.event.inputs.environment || 'dev' }}
       sha: ${{ needs.setup.outputs.head_sha }}
+      release_channel: 'hotfix-fleet-probe'
 
   build-docs:
     name: Build (docs)

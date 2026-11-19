@@ -871,6 +871,25 @@ jobs:
               || { echo "::error::no pull_request Cascade Hotfix finalize run for env/${e} head ${pr_head}"; exit 1; }
             gh run watch "${finalize_run_id}" --interval 60 --exit-status \
               || { echo "::error::env/${e} finalize run ${finalize_run_id} did not conclude success"; exit 1; }
+            # The merged-hotfix build callback (build-app) runs INSIDE this
+            # finalize run as its build-app job. Assert from this run's own job
+            # log that the build job received the hotfix's target environment
+            # and the manifest's fixed release_channel literal: build-app logs
+            # the resolved probe line, and the hotfix generator is the only
+            # path that can supply both inputs on a merged hotfix (#663). The
+            # grepped string is the RESOLVED marker (environment=${e}), which
+            # never appears in any committed workflow source - those carry the
+            # unrendered inputs.environment / inputs.release_channel placeholders
+            # - and the probe step runs
+            # without set -x, so no command echo can satisfy it. Reverting the
+            # hotfix build-input threading alone leaves build-app's required
+            # environment/release_channel unsatisfied on this run, which fails
+            # both the gh run watch above and this grep.
+            finalize_log="$(gh run view "${finalize_run_id}" --log 2>/dev/null || true)"
+            printf '%s' "${finalize_log}" \
+              | grep -qF "hotfix-probe environment=${e} release_channel=hotfix-fleet-probe" \
+              || { echo "::error::env/${e} hotfix build job did not log the probe marker with environment=${e} and release_channel=hotfix-fleet-probe"; exit 1; }
+            echo "  ok: env/${e} hotfix build callback received environment=${e} and release_channel=hotfix-fleet-probe"
             echo "finalize_${e}_run_id=${finalize_run_id}" >> "${GITHUB_OUTPUT}"
             echo "env/${e} finalize (pull_request) run ${finalize_run_id} concluded success"
           done
