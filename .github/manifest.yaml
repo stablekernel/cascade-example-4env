@@ -19,6 +19,8 @@ ci:
         workflow: .github/workflows/build-app.yaml
         triggers: []
         retries: 2
+        inputs:
+          release_channel: hotfix-fleet-probe
       - name: docs
         workflow: .github/workflows/build-docs.yaml
         triggers: []
