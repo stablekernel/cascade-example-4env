@@ -307,8 +307,10 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'cascade-hotfix')
     uses: ./.github/workflows/build-app.yaml
     with:
+      environment: ${{ needs.context.outputs.target_env }}
       sha: ${{ github.event.pull_request.merge_commit_sha }}
       target_env: ${{ needs.context.outputs.target_env }}
+      release_channel: 'hotfix-fleet-probe'
 
   build-docs:
     name: Build docs
@@ -316,6 +318,7 @@ jobs:
     if: github.event_name == 'pull_request' && github.event.pull_request.merged == true && contains(github.event.pull_request.labels.*.name, 'cascade-hotfix')
     uses: ./.github/workflows/build-docs.yaml
     with:
+      environment: ${{ needs.context.outputs.target_env }}
       sha: ${{ github.event.pull_request.merge_commit_sha }}
       target_env: ${{ needs.context.outputs.target_env }}
 
