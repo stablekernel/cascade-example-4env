@@ -310,6 +310,7 @@ jobs:
       environment: ${{ needs.context.outputs.target_env }}
       sha: ${{ github.event.pull_request.merge_commit_sha }}
       target_env: ${{ needs.context.outputs.target_env }}
+      release_channel: 'hotfix-fleet-probe'
 
   build-docs:
     name: Build docs
