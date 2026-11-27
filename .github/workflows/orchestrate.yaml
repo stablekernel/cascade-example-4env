@@ -319,3 +319,5 @@ jobs:
         run: |
           echo "One or more critical callbacks failed or were cancelled"
           exit 1
+
+# drift probe 2026-11-27T09:11:45WZ
